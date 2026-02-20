@@ -1,6 +1,6 @@
 #!/bin/bash
 # Ralph Wiggum v2 - Implement → Review loop with gatekeeper commits
-# Usage: ./ralph.sh [--tool amp|claude] [--reviewer codex|skip] [--max-rounds N] [max_iterations]
+# Usage: ./ralph.sh [--tool amp|claude] [--model MODEL] [--reviewer codex|skip] [--max-rounds N] [max_iterations]
 #
 # Each iteration (one user story):
 #   loop (up to max-rounds):
@@ -17,6 +17,7 @@ set -e
 # ─── Parse arguments ──────────────────────────────────────────────────
 
 TOOL="amp"
+MODEL=""
 REVIEWER="codex"
 MAX_ITERATIONS=10
 MAX_REVIEW_ROUNDS=3
@@ -29,6 +30,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --tool=*)
       TOOL="${1#*=}"
+      shift
+      ;;
+    --model)
+      MODEL="$2"
+      shift 2
+      ;;
+    --model=*)
+      MODEL="${1#*=}"
       shift
       ;;
     --reviewer)
@@ -160,13 +169,13 @@ run_agent() {
   local PROMPT_FILE="$1"
   local PHASE_NAME="$2"
 
-  echo "  [$PHASE_NAME] Running $TOOL..."
+  echo "  [$PHASE_NAME] Running $TOOL${MODEL:+ (model: $MODEL)}..."
   echo ""
 
   if [[ "$TOOL" == "amp" ]]; then
     cat "$PROMPT_FILE" | amp --dangerously-allow-all 2>&1 | tee "$AGENT_OUTPUT_FILE" || true
   else
-    claude --dangerously-skip-permissions --print < "$PROMPT_FILE" 2>&1 | tee "$AGENT_OUTPUT_FILE" || true
+    claude ${MODEL:+--model "$MODEL"} --dangerously-skip-permissions --print < "$PROMPT_FILE" 2>&1 | tee "$AGENT_OUTPUT_FILE" || true
   fi
 
   echo ""
@@ -207,7 +216,7 @@ run_review() {
 
 # ─── Main loop ────────────────────────────────────────────────────────
 
-echo "Starting Ralph v2 - Tool: $TOOL - Reviewer: $REVIEWER - Max iterations: $MAX_ITERATIONS - Max review rounds: $MAX_REVIEW_ROUNDS"
+echo "Starting Ralph v2 - Tool: $TOOL${MODEL:+ ($MODEL)} - Reviewer: $REVIEWER - Max iterations: $MAX_ITERATIONS - Max review rounds: $MAX_REVIEW_ROUNDS"
 echo ""
 
 for i in $(seq 1 $MAX_ITERATIONS); do
