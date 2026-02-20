@@ -8,6 +8,58 @@ Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/).
 
 [Read my in-depth article on how I use Ralph](https://x.com/ryancarson/status/2008548371712135632)
 
+## Three-Phase Mode (v2)
+
+This fork adds an optional **three-phase iteration loop** with a separate code review step:
+
+```
+Phase A: Implement  -->  Phase B: Review  -->  Phase C: Fix & Commit
+   (claude/amp)           (codex)                (claude/amp)
+```
+
+1. **Phase A (Implement)** — the agent codes the story and stages files (`git add`), but does NOT commit
+2. **Phase B (Review)** — a separate reviewer (OpenAI Codex by default) reviews `git diff --cached` and writes `.ralph-review.json` with verdict (`PASS` / `NEEDS_FIX`) and structured issues
+3. **Phase C (Fix & Commit)** — the agent reads the review, fixes critical/important issues, runs tests, and commits
+
+This catches bugs, architecture violations, and missing test coverage **before** they enter git history.
+
+### Usage
+
+```bash
+# Three-phase with codex review (default)
+./ralph.sh --tool claude --reviewer codex 15
+
+# Skip review (single-phase, original behavior)
+./ralph.sh --tool claude --reviewer skip 15
+
+# Amp + codex review
+./ralph.sh --tool amp --reviewer codex 10
+```
+
+### Review output format (`.ralph-review.json`)
+
+```json
+{
+  "story_id": "US-003",
+  "verdict": "NEEDS_FIX",
+  "summary": "Missing error handling in parser",
+  "issues": [
+    {
+      "severity": "critical",
+      "category": "bug",
+      "file": "src/parser.cpp",
+      "line": 42,
+      "description": "Null pointer dereference on empty input",
+      "suggestion": "Add early return if input.empty()"
+    }
+  ]
+}
+```
+
+### Prerequisites for review phase
+
+- [OpenAI Codex CLI](https://github.com/openai/codex) installed and authenticated (for `--reviewer codex`)
+
 ## Prerequisites
 
 - One of the following AI coding tools installed and authenticated:
@@ -15,6 +67,7 @@ Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/).
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`)
 - `jq` installed (`brew install jq` on macOS)
 - A git repository for your project
+- (Optional) [OpenAI Codex CLI](https://github.com/openai/codex) for the review phase (`--reviewer codex`)
 
 ## Setup
 
@@ -110,16 +163,19 @@ This creates `prd.json` with user stories structured for autonomous execution.
 ### 3. Run Ralph
 
 ```bash
-# Using Amp (default)
+# Using Amp (default, single-phase)
 ./scripts/ralph/ralph.sh [max_iterations]
 
-# Using Claude Code
+# Using Claude Code (single-phase)
 ./scripts/ralph/ralph.sh --tool claude [max_iterations]
+
+# Three-phase with code review
+./scripts/ralph/ralph.sh --tool claude --reviewer codex [max_iterations]
 ```
 
-Default is 10 iterations. Use `--tool amp` or `--tool claude` to select your AI coding tool.
+Default is 10 iterations. Use `--tool amp` or `--tool claude` to select your AI coding tool. Use `--reviewer codex` to enable the three-phase review loop (or `--reviewer skip` to disable).
 
-Ralph will:
+**Single-phase** (default / `--reviewer skip`): Ralph will:
 1. Create a feature branch (from PRD `branchName`)
 2. Pick the highest priority story where `passes: false`
 3. Implement that single story
@@ -129,16 +185,25 @@ Ralph will:
 7. Append learnings to `progress.txt`
 8. Repeat until all stories pass or max iterations reached
 
+**Three-phase** (`--reviewer codex`): each iteration runs:
+1. **Phase A** — agent implements the story, stages files (no commit)
+2. **Phase B** — codex reviews staged diff, writes `.ralph-review.json`
+3. **Phase C** — agent fixes review issues, runs tests, commits
+
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `ralph.sh` | The bash loop that spawns fresh AI instances (supports `--tool amp` or `--tool claude`) |
-| `prompt.md` | Prompt template for Amp |
-| `CLAUDE.md` | Prompt template for Claude Code |
+| `ralph.sh` | The bash loop that spawns fresh AI instances (supports `--tool amp\|claude`, `--reviewer codex\|skip`) |
+| `prompt.md` | Prompt template for Amp (single-phase) |
+| `CLAUDE.md` | Phase A prompt — implement & stage (three-phase) / full prompt (single-phase for Claude Code) |
+| `CLAUDE-fix.md` | Phase C prompt — fix review issues & commit (three-phase only) |
+| `review-prompt.md` | Phase B prompt — code review instructions for codex (three-phase only) |
 | `prd.json` | User stories with `passes` status (the task list) |
 | `prd.json.example` | Example PRD format for reference |
 | `progress.txt` | Append-only learnings for future iterations |
+| `.ralph-review.json` | Code review output (created by Phase B, consumed by Phase C, deleted after commit) |
+| `.ralph-current-story` | Current story ID (created by Phase A, deleted after commit) |
 | `skills/prd/` | Skill for generating PRDs (works with Amp and Claude Code) |
 | `skills/ralph/` | Skill for converting PRDs to JSON (works with Amp and Claude Code) |
 | `.claude-plugin/` | Plugin manifest for Claude Code marketplace discovery |
