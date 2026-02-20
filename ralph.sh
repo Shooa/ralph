@@ -211,8 +211,19 @@ echo "Starting Ralph v2 - Tool: $TOOL - Reviewer: $REVIEWER - Max iterations: $M
 echo ""
 
 for i in $(seq 1 $MAX_ITERATIONS); do
+  # ─── Early exit: check if all stories are already done ────────────
+  REMAINING=$(jq '[.userStories[] | select(.passes != true)] | length' "$PRD_FILE" 2>/dev/null || echo "1")
+  if [ "$REMAINING" -eq 0 ]; then
+    echo ""
+    echo "==============================================================="
+    echo "  Ralph completed all tasks! (all stories pass)"
+    echo "  Completed at iteration $i of $MAX_ITERATIONS"
+    echo "==============================================================="
+    exit 0
+  fi
+
   echo "==============================================================="
-  echo "  Ralph Story Iteration $i of $MAX_ITERATIONS"
+  echo "  Ralph Story Iteration $i of $MAX_ITERATIONS ($REMAINING stories remaining)"
   echo "==============================================================="
 
   # Clean up stale state from previous story
