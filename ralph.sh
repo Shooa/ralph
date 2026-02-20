@@ -1,10 +1,15 @@
 #!/bin/bash
-# Ralph Wiggum v2 - Three-phase AI agent loop with code review
-# Usage: ./ralph.sh [--tool amp|claude] [--reviewer codex|skip] [max_iterations]
+# Ralph Wiggum v2 - Implement → Review loop with gatekeeper commits
+# Usage: ./ralph.sh [--tool amp|claude] [--reviewer codex|skip] [--max-rounds N] [max_iterations]
 #
-# Phase A: Implement (claude/amp) — code the story, stage files, no commit
-# Phase B: Review (codex exec)   — review staged diff, write .ralph-review.json
-# Phase C: Fix & Commit (claude/amp) — fix review issues, test, commit
+# Each iteration (one user story):
+#   loop (up to max-rounds):
+#     Agent: implement or fix review issues, stage files
+#     Reviewer: review staged diff
+#       PASS  → reviewer commits, marks story done, break
+#       NEEDS_FIX → writes .ralph-review.json, agent retries
+#
+# Reviewer = gatekeeper: only the reviewer commits code.
 
 set -e
 
@@ -13,6 +18,7 @@ set -e
 TOOL="amp"
 REVIEWER="codex"
 MAX_ITERATIONS=10
+MAX_REVIEW_ROUNDS=3
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -30,6 +36,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --reviewer=*)
       REVIEWER="${1#*=}"
+      shift
+      ;;
+    --max-rounds)
+      MAX_REVIEW_ROUNDS="$2"
+      shift 2
+      ;;
+    --max-rounds=*)
+      MAX_REVIEW_ROUNDS="${1#*=}"
       shift
       ;;
     *)
@@ -102,9 +116,7 @@ fi
 AGENT_OUTPUT_FILE=$(mktemp /tmp/ralph-output.XXXXXX)
 trap "rm -f '$AGENT_OUTPUT_FILE'" EXIT
 
-# ─── Helper: run the implementation/fix agent ─────────────────────────
-# Output streams directly to terminal. Also saved to AGENT_OUTPUT_FILE
-# for post-hoc checks (e.g. COMPLETE signal).
+# ─── Helper: run the implementation agent ─────────────────────────────
 
 run_agent() {
   local PROMPT_FILE="$1"
@@ -122,13 +134,10 @@ run_agent() {
   echo ""
 }
 
-# ─── Helper: run codex review ─────────────────────────────────────────
+# ─── Helper: run reviewer ────────────────────────────────────────────
 
 run_review() {
-  echo "  [Phase B: Review] Running codex..."
-
-  # Clean up old review file
-  rm -f "$REVIEW_FILE"
+  echo "  [Review] Running codex..."
 
   codex exec \
     --full-auto \
@@ -163,73 +172,126 @@ EOF
 
 # ─── Main loop ────────────────────────────────────────────────────────
 
-echo "Starting Ralph v2 - Tool: $TOOL - Reviewer: $REVIEWER - Max iterations: $MAX_ITERATIONS"
+echo "Starting Ralph v2 - Tool: $TOOL - Reviewer: $REVIEWER - Max iterations: $MAX_ITERATIONS - Max review rounds: $MAX_REVIEW_ROUNDS"
 echo ""
 
 for i in $(seq 1 $MAX_ITERATIONS); do
   echo "==============================================================="
-  echo "  Ralph Iteration $i of $MAX_ITERATIONS"
+  echo "  Ralph Story Iteration $i of $MAX_ITERATIONS"
   echo "==============================================================="
 
-  # Clean up stale state from previous iterations
+  # Clean up stale state from previous story
   rm -f "$REVIEW_FILE" "$STORY_FILE"
 
-  # ─── Phase A: Implement ───────────────────────────────────────────
+  # ─── Implement → Review loop ──────────────────────────────────────
 
-  echo ""
-  echo "--- Phase A: Implement ---"
-  run_agent "$SCRIPT_DIR/CLAUDE.md" "Phase A: Implement"
+  STORY_COMMITTED=false
 
-  # Check if there's anything staged
-  if ! git diff --cached --quiet 2>/dev/null; then
-    echo "  Staged changes detected."
-  else
-    echo "  WARNING: No staged changes after Phase A."
-    echo "  Skipping review, moving to next iteration."
-    sleep 2
-    continue
-  fi
-
-  # ─── Phase B: Review ──────────────────────────────────────────────
-
-  echo ""
-  echo "--- Phase B: Review ---"
-  if [[ "$REVIEWER" == "codex" ]]; then
-    run_review
-  else
-    echo "  Review skipped (--reviewer=skip)"
-    STORY_ID="unknown"
-    [ -f "$STORY_FILE" ] && STORY_ID=$(cat "$STORY_FILE")
-    cat > "$REVIEW_FILE" <<EOF
-{
-  "story_id": "$STORY_ID",
-  "verdict": "PASS",
-  "summary": "Review skipped by user",
-  "issues": []
-}
-EOF
-  fi
-
-  # ─── Phase C: Fix & Commit ────────────────────────────────────────
-
-  echo ""
-  echo "--- Phase C: Fix & Commit ---"
-  run_agent "$SCRIPT_DIR/CLAUDE-fix.md" "Phase C: Fix & Commit"
-
-  # Check for completion signal in captured output
-  if grep -q "<promise>COMPLETE</promise>" "$AGENT_OUTPUT_FILE" 2>/dev/null; then
+  for round in $(seq 1 $MAX_REVIEW_ROUNDS); do
     echo ""
-    echo "==============================================================="
-    echo "  Ralph completed all tasks!"
-    echo "  Completed at iteration $i of $MAX_ITERATIONS"
-    echo "==============================================================="
-    # Final cleanup
-    rm -f "$REVIEW_FILE" "$STORY_FILE"
-    exit 0
+    echo "--- Round $round of $MAX_REVIEW_ROUNDS ---"
+
+    # ─── Implement (or fix) ───────────────────────────────────────
+
+    if [ "$round" -eq 1 ]; then
+      echo ""
+      echo ">>> Implement"
+    else
+      echo ""
+      echo ">>> Fix review issues (round $round)"
+    fi
+
+    run_agent "$SCRIPT_DIR/CLAUDE.md" "Implement"
+
+    # Check if there's anything staged
+    if ! git diff --cached --quiet 2>/dev/null; then
+      echo "  Staged changes detected."
+    else
+      echo "  WARNING: No staged changes."
+      echo "  Skipping review."
+      break
+    fi
+
+    # ─── Review ───────────────────────────────────────────────────
+
+    echo ""
+    echo ">>> Review"
+
+    if [[ "$REVIEWER" == "codex" ]]; then
+      run_review
+    else
+      echo "  Review skipped (--reviewer=skip)"
+      # In skip mode, reviewer auto-passes and commits
+      STORY_ID="unknown"
+      [ -f "$STORY_FILE" ] && STORY_ID=$(cat "$STORY_FILE")
+      # Just commit directly
+      STORY_TITLE=$(jq -r --arg sid "$STORY_ID" '.userStories[] | select(.id == $sid) | .title // "unknown"' "$PRD_FILE" 2>/dev/null || echo "unknown")
+      git commit -m "feat: [$STORY_ID] - $STORY_TITLE" || true
+      # Mark story as passed
+      jq --arg sid "$STORY_ID" '(.userStories[] | select(.id == $sid)).passes = true' "$PRD_FILE" > "$PRD_FILE.tmp" && mv "$PRD_FILE.tmp" "$PRD_FILE"
+      rm -f "$REVIEW_FILE" "$STORY_FILE"
+      STORY_COMMITTED=true
+      break
+    fi
+
+    # ─── Check verdict ────────────────────────────────────────────
+
+    VERDICT=$(jq -r '.verdict // "UNKNOWN"' "$REVIEW_FILE" 2>/dev/null || echo "UNKNOWN")
+
+    if [[ "$VERDICT" == "PASS" ]]; then
+      echo "  Story PASSED review."
+      # Reviewer already committed on PASS (per review-prompt.md)
+      rm -f "$REVIEW_FILE" "$STORY_FILE"
+      STORY_COMMITTED=true
+      break
+    elif [[ "$VERDICT" == "NEEDS_FIX" ]]; then
+      echo "  Story NEEDS_FIX — sending back to agent (round $((round + 1)))."
+      # .ralph-review.json stays — agent will read it on next round
+      if [ "$round" -eq "$MAX_REVIEW_ROUNDS" ]; then
+        echo ""
+        echo "  ERROR: Max review rounds ($MAX_REVIEW_ROUNDS) reached without PASS."
+        echo "  Unstaging changes and moving to next story."
+        git reset HEAD -- . 2>/dev/null || true
+        rm -f "$REVIEW_FILE" "$STORY_FILE"
+      fi
+    else
+      echo "  WARNING: Unknown verdict '$VERDICT'. Treating as NEEDS_FIX."
+      if [ "$round" -eq "$MAX_REVIEW_ROUNDS" ]; then
+        git reset HEAD -- . 2>/dev/null || true
+        rm -f "$REVIEW_FILE" "$STORY_FILE"
+      fi
+    fi
+
+    sleep 2
+  done
+
+  # ─── Check for completion ─────────────────────────────────────────
+
+  if [ "$STORY_COMMITTED" = true ]; then
+    # Check if COMPLETE signal was emitted by the reviewer
+    if grep -q "<promise>COMPLETE</promise>" "$AGENT_OUTPUT_FILE" 2>/dev/null; then
+      echo ""
+      echo "==============================================================="
+      echo "  Ralph completed all tasks!"
+      echo "  Completed at iteration $i of $MAX_ITERATIONS"
+      echo "==============================================================="
+      exit 0
+    fi
+
+    # Also check prd.json directly
+    REMAINING=$(jq '[.userStories[] | select(.passes != true)] | length' "$PRD_FILE" 2>/dev/null || echo "1")
+    if [ "$REMAINING" -eq 0 ]; then
+      echo ""
+      echo "==============================================================="
+      echo "  Ralph completed all tasks! (all stories pass)"
+      echo "  Completed at iteration $i of $MAX_ITERATIONS"
+      echo "==============================================================="
+      exit 0
+    fi
   fi
 
   echo ""
-  echo "Iteration $i complete. Continuing..."
+  echo "Story iteration $i complete. Continuing to next story..."
   sleep 2
 done
 

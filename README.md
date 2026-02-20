@@ -8,28 +8,45 @@ Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/).
 
 [Read my in-depth article on how I use Ralph](https://x.com/ryancarson/status/2008548371712135632)
 
-## Three-Phase Mode (v2)
+## Review Mode (v2)
 
-This fork adds an optional **three-phase iteration loop** with a separate code review step:
+This fork adds an optional **implement → review loop** with a separate code reviewer as gatekeeper:
 
 ```
-Phase A: Implement  -->  Phase B: Review  -->  Phase C: Fix & Commit
-   (claude/amp)           (codex)                (claude/amp)
+┌──────────────────────────────────────────┐
+│  for each story:                         │
+│    ┌─────────────┐     ┌──────────────┐  │
+│    │  Implement   │────▶│   Review     │  │
+│    │ (claude/amp) │     │   (codex)    │  │
+│    │  stage only  │◀────│              │  │
+│    └─────────────┘     │  NEEDS_FIX?  │  │
+│      fix & retry       │  ──────────  │  │
+│                        │  PASS?       │  │
+│                        │  → commit    │  │
+│                        │  → next story│  │
+│                        └──────────────┘  │
+└──────────────────────────────────────────┘
 ```
 
-1. **Phase A (Implement)** — the agent codes the story and stages files (`git add`), but does NOT commit
-2. **Phase B (Review)** — a separate reviewer (OpenAI Codex by default) reviews `git diff --cached` and writes `.ralph-review.json` with verdict (`PASS` / `NEEDS_FIX`) and structured issues
-3. **Phase C (Fix & Commit)** — the agent reads the review, fixes critical/important issues, runs tests, and commits
+1. **Implement** — the agent codes the story and stages files (`git add`), but does NOT commit. If `.ralph-review.json` exists from a previous round, the agent reads it and fixes the issues first.
+2. **Review** — a separate reviewer (OpenAI Codex by default) reviews `git diff --cached`, verifies all acceptance criteria are met, and either:
+   - **PASS** → commits the code, marks the story done, moves on
+   - **NEEDS_FIX** → writes `.ralph-review.json` with issues, agent retries
 
-This catches bugs, architecture violations, and missing test coverage **before** they enter git history.
+The loop repeats up to `--max-rounds` times (default: 3) per story. Only the reviewer commits — the implementation agent never touches git history.
+
+This catches incomplete implementations, bugs, architecture violations, and missing test coverage **before** they enter git history.
 
 ### Usage
 
 ```bash
-# Three-phase with codex review (default)
+# With codex review (default)
 ./ralph.sh --tool claude --reviewer codex 15
 
-# Skip review (single-phase, original behavior)
+# Custom max review rounds per story
+./ralph.sh --tool claude --reviewer codex --max-rounds 5 15
+
+# Skip review (original single-phase behavior)
 ./ralph.sh --tool claude --reviewer skip 15
 
 # Amp + codex review
@@ -46,10 +63,10 @@ This catches bugs, architecture violations, and missing test coverage **before**
   "issues": [
     {
       "severity": "critical",
-      "category": "bug",
+      "category": "task_completion",
       "file": "src/parser.cpp",
       "line": 42,
-      "description": "Null pointer dereference on empty input",
+      "description": "Acceptance criterion #3 not met: empty input not handled",
       "suggestion": "Add early return if input.empty()"
     }
   ]
@@ -185,10 +202,12 @@ Default is 10 iterations. Use `--tool amp` or `--tool claude` to select your AI 
 7. Append learnings to `progress.txt`
 8. Repeat until all stories pass or max iterations reached
 
-**Three-phase** (`--reviewer codex`): each iteration runs:
-1. **Phase A** — agent implements the story, stages files (no commit)
-2. **Phase B** — codex reviews staged diff, writes `.ralph-review.json`
-3. **Phase C** — agent fixes review issues, runs tests, commits
+**With reviewer** (`--reviewer codex`): each story iteration loops:
+1. **Implement** — agent codes the story (or fixes review issues), stages files (no commit)
+2. **Review** — codex reviews staged diff and checks acceptance criteria
+   - **PASS** → reviewer commits, marks story done
+   - **NEEDS_FIX** → writes `.ralph-review.json`, agent retries from step 1
+3. Loop repeats up to `--max-rounds` times (default: 3) per story
 
 ## Key Files
 
@@ -196,14 +215,13 @@ Default is 10 iterations. Use `--tool amp` or `--tool claude` to select your AI 
 |------|---------|
 | `ralph.sh` | The bash loop that spawns fresh AI instances (supports `--tool amp\|claude`, `--reviewer codex\|skip`) |
 | `prompt.md` | Prompt template for Amp (single-phase) |
-| `CLAUDE.md` | Phase A prompt — implement & stage (three-phase) / full prompt (single-phase for Claude Code) |
-| `CLAUDE-fix.md` | Phase C prompt — fix review issues & commit (three-phase only) |
-| `review-prompt.md` | Phase B prompt — code review instructions for codex (three-phase only) |
+| `CLAUDE.md` | Implementation agent prompt — implement & stage, or fix review issues & re-stage |
+| `review-prompt.md` | Reviewer prompt — review, commit on PASS, or write `.ralph-review.json` on NEEDS_FIX |
 | `prd.json` | User stories with `passes` status (the task list) |
 | `prd.json.example` | Example PRD format for reference |
 | `progress.txt` | Append-only learnings for future iterations |
-| `.ralph-review.json` | Code review output (created by Phase B, consumed by Phase C, deleted after commit) |
-| `.ralph-current-story` | Current story ID (created by Phase A, deleted after commit) |
+| `.ralph-review.json` | Review feedback (created by reviewer on NEEDS_FIX, read by agent, deleted after commit) |
+| `.ralph-current-story` | Current story ID (created by agent, deleted by reviewer after commit) |
 | `skills/prd/` | Skill for generating PRDs (works with Amp and Claude Code) |
 | `skills/ralph/` | Skill for converting PRDs to JSON (works with Amp and Claude Code) |
 | `.claude-plugin/` | Plugin manifest for Claude Code marketplace discovery |
