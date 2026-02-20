@@ -10,6 +10,7 @@
 #       NEEDS_FIX → writes .ralph-review.json, agent retries
 #
 # Reviewer = gatekeeper: only the reviewer commits code.
+# If the reviewer crashes, ralph.sh commits as fallback.
 
 set -e
 
@@ -116,6 +117,43 @@ fi
 AGENT_OUTPUT_FILE=$(mktemp /tmp/ralph-output.XXXXXX)
 trap "rm -f '$AGENT_OUTPUT_FILE'" EXIT
 
+# ─── Helper: commit story from ralph.sh (fallback / skip mode) ───────
+# Used when the reviewer didn't commit (crash, skip, etc.)
+
+commit_story() {
+  local REASON="$1"  # "skip" | "reviewer-crash" | etc.
+
+  local STORY_ID="unknown"
+  [ -f "$STORY_FILE" ] && STORY_ID=$(cat "$STORY_FILE")
+
+  local STORY_TITLE
+  STORY_TITLE=$(jq -r --arg sid "$STORY_ID" \
+    '.userStories[] | select(.id == $sid) | .title // "unknown"' \
+    "$PRD_FILE" 2>/dev/null || echo "unknown")
+
+  # Commit staged changes
+  git commit -m "feat: [$STORY_ID] - $STORY_TITLE" || true
+
+  # Mark story as passed in prd.json
+  jq --arg sid "$STORY_ID" \
+    '(.userStories[] | select(.id == $sid)).passes = true' \
+    "$PRD_FILE" > "$PRD_FILE.tmp" && mv "$PRD_FILE.tmp" "$PRD_FILE"
+
+  # Append to progress
+  {
+    echo ""
+    echo "## $(date '+%Y-%m-%d %H:%M') - $STORY_ID"
+    echo "- $STORY_TITLE"
+    echo "- Review: $REASON"
+    echo "---"
+  } >> "$PROGRESS_FILE"
+
+  echo "  Committed [$STORY_ID] ($REASON)"
+
+  # Cleanup
+  rm -f "$REVIEW_FILE" "$STORY_FILE"
+}
+
 # ─── Helper: run the implementation agent ─────────────────────────────
 
 run_agent() {
@@ -135,9 +173,15 @@ run_agent() {
 }
 
 # ─── Helper: run reviewer ────────────────────────────────────────────
+# Sets REVIEW_VERDICT: "PASS", "NEEDS_FIX", or "CRASH"
+
+REVIEW_VERDICT="UNKNOWN"
 
 run_review() {
   echo "  [Review] Running codex..."
+
+  # Clean old review
+  rm -f "$REVIEW_FILE"
 
   codex exec \
     --full-auto \
@@ -145,28 +189,19 @@ run_review() {
     < "$SCRIPT_DIR/review-prompt.md" \
     2>&1 | tee /dev/stderr || true
 
-  # Check that review file was created
+  # Check if codex produced the review file
   if [ ! -f "$REVIEW_FILE" ]; then
-    echo "  WARNING: Codex did not produce $REVIEW_FILE. Creating PASS fallback."
-    local STORY_ID="unknown"
-    [ -f "$STORY_FILE" ] && STORY_ID=$(cat "$STORY_FILE")
-    cat > "$REVIEW_FILE" <<EOF
-{
-  "story_id": "$STORY_ID",
-  "verdict": "PASS",
-  "summary": "Review skipped — codex did not produce a report",
-  "issues": []
-}
-EOF
+    echo "  WARNING: Codex crashed or did not produce $REVIEW_FILE."
+    REVIEW_VERDICT="CRASH"
+    return
   fi
 
-  local VERDICT
-  VERDICT=$(jq -r '.verdict // "UNKNOWN"' "$REVIEW_FILE" 2>/dev/null || echo "UNKNOWN")
+  REVIEW_VERDICT=$(jq -r '.verdict // "UNKNOWN"' "$REVIEW_FILE" 2>/dev/null || echo "UNKNOWN")
   local ISSUE_COUNT
   ISSUE_COUNT=$(jq '.issues | length' "$REVIEW_FILE" 2>/dev/null || echo "0")
 
   echo ""
-  echo "  Review verdict: $VERDICT ($ISSUE_COUNT issues)"
+  echo "  Review verdict: $REVIEW_VERDICT ($ISSUE_COUNT issues)"
   echo ""
 }
 
@@ -217,34 +252,39 @@ for i in $(seq 1 $MAX_ITERATIONS); do
     echo ""
     echo ">>> Review"
 
-    if [[ "$REVIEWER" == "codex" ]]; then
-      run_review
-    else
+    if [[ "$REVIEWER" == "skip" ]]; then
       echo "  Review skipped (--reviewer=skip)"
-      # In skip mode, reviewer auto-passes and commits
-      STORY_ID="unknown"
-      [ -f "$STORY_FILE" ] && STORY_ID=$(cat "$STORY_FILE")
-      # Just commit directly
-      STORY_TITLE=$(jq -r --arg sid "$STORY_ID" '.userStories[] | select(.id == $sid) | .title // "unknown"' "$PRD_FILE" 2>/dev/null || echo "unknown")
-      git commit -m "feat: [$STORY_ID] - $STORY_TITLE" || true
-      # Mark story as passed
-      jq --arg sid "$STORY_ID" '(.userStories[] | select(.id == $sid)).passes = true' "$PRD_FILE" > "$PRD_FILE.tmp" && mv "$PRD_FILE.tmp" "$PRD_FILE"
-      rm -f "$REVIEW_FILE" "$STORY_FILE"
+      commit_story "review skipped"
       STORY_COMMITTED=true
       break
     fi
 
-    # ─── Check verdict ────────────────────────────────────────────
+    # Run codex review
+    run_review
 
-    VERDICT=$(jq -r '.verdict // "UNKNOWN"' "$REVIEW_FILE" 2>/dev/null || echo "UNKNOWN")
+    # ─── Handle verdict ───────────────────────────────────────────
 
-    if [[ "$VERDICT" == "PASS" ]]; then
-      echo "  Story PASSED review."
-      # Reviewer already committed on PASS (per review-prompt.md)
+    if [[ "$REVIEW_VERDICT" == "CRASH" ]]; then
+      echo "  Reviewer crashed — committing from ralph.sh as fallback."
+      commit_story "reviewer crashed, auto-committed"
+      STORY_COMMITTED=true
+      break
+
+    elif [[ "$REVIEW_VERDICT" == "PASS" ]]; then
+      # Check if the reviewer already committed (it should per review-prompt.md)
+      if git diff --cached --quiet 2>/dev/null; then
+        # Nothing staged = reviewer committed successfully
+        echo "  Story PASSED review (reviewer committed)."
+      else
+        # Reviewer wrote PASS but didn't commit — do it ourselves
+        echo "  Story PASSED review but reviewer did not commit — committing from ralph.sh."
+        commit_story "PASS (committed by ralph.sh)"
+      fi
       rm -f "$REVIEW_FILE" "$STORY_FILE"
       STORY_COMMITTED=true
       break
-    elif [[ "$VERDICT" == "NEEDS_FIX" ]]; then
+
+    elif [[ "$REVIEW_VERDICT" == "NEEDS_FIX" ]]; then
       echo "  Story NEEDS_FIX — sending back to agent (round $((round + 1)))."
       # .ralph-review.json stays — agent will read it on next round
       if [ "$round" -eq "$MAX_REVIEW_ROUNDS" ]; then
@@ -254,8 +294,9 @@ for i in $(seq 1 $MAX_ITERATIONS); do
         git reset HEAD -- . 2>/dev/null || true
         rm -f "$REVIEW_FILE" "$STORY_FILE"
       fi
+
     else
-      echo "  WARNING: Unknown verdict '$VERDICT'. Treating as NEEDS_FIX."
+      echo "  WARNING: Unknown verdict '$REVIEW_VERDICT'. Treating as NEEDS_FIX."
       if [ "$round" -eq "$MAX_REVIEW_ROUNDS" ]; then
         git reset HEAD -- . 2>/dev/null || true
         rm -f "$REVIEW_FILE" "$STORY_FILE"
