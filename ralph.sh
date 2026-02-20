@@ -310,15 +310,13 @@ for i in $(seq 1 $MAX_ITERATIONS); do
       if [ "$round" -eq "$MAX_REVIEW_ROUNDS" ]; then
         echo ""
         echo "  ERROR: Max review rounds ($MAX_REVIEW_ROUNDS) reached without PASS."
-        echo "  Unstaging changes and moving to next story."
-        git reset HEAD -- . 2>/dev/null || true
+        echo "  Leaving changes in working tree for next iteration."
         rm -f "$REVIEW_FILE" "$STORY_FILE"
       fi
 
     else
       echo "  WARNING: Unknown verdict '$REVIEW_VERDICT'. Treating as NEEDS_FIX."
       if [ "$round" -eq "$MAX_REVIEW_ROUNDS" ]; then
-        git reset HEAD -- . 2>/dev/null || true
         rm -f "$REVIEW_FILE" "$STORY_FILE"
       fi
     fi
