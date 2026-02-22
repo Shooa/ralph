@@ -143,6 +143,60 @@ fi
 AGENT_OUTPUT_FILE=$(mktemp /tmp/ralph-output.XXXXXX)
 trap "rm -f '$AGENT_OUTPUT_FILE'" EXIT
 
+# ─── Rate limit detection and retry ──────────────────────────────────
+
+RATE_LIMIT_WAIT=900        # 15 minutes between retries
+RATE_LIMIT_MAX_WAIT=28800  # 8 hours total wait before giving up
+RATE_LIMIT_TOTAL_WAITED=0
+
+is_rate_limited() {
+  local OUTPUT_FILE="$1"
+  grep -qiE 'rate.limit|rate_limit_exceeded|429|overloaded|usage.limit|too many requests' "$OUTPUT_FILE" 2>/dev/null
+}
+
+wait_for_rate_limit() {
+  local WHO="$1"  # "agent" or "reviewer"
+  echo ""
+  echo "  ⏸  Rate limit detected ($WHO). Pausing..."
+
+  while true; do
+    if [ "$RATE_LIMIT_TOTAL_WAITED" -ge "$RATE_LIMIT_MAX_WAIT" ]; then
+      echo "  ✗  Rate limit wait exceeded ${RATE_LIMIT_MAX_WAIT}s total. Giving up."
+      echo "  ✗  Resume manually when limits reset."
+      exit 2
+    fi
+
+    local REMAINING_MINS=$(( (RATE_LIMIT_MAX_WAIT - RATE_LIMIT_TOTAL_WAITED) / 60 ))
+    echo "  ⏸  Waiting ${RATE_LIMIT_WAIT}s... (total waited: ${RATE_LIMIT_TOTAL_WAITED}s, give up in ~${REMAINING_MINS}m)"
+    sleep "$RATE_LIMIT_WAIT"
+    RATE_LIMIT_TOTAL_WAITED=$(( RATE_LIMIT_TOTAL_WAITED + RATE_LIMIT_WAIT ))
+
+    # Probe: lightweight check if limits have reset
+    echo "  ⏸  Probing API availability..."
+    local PROBE_OUT
+    if [[ "$WHO" == "reviewer" ]]; then
+      PROBE_OUT=$(codex exec --full-auto -C "$(pwd)" <<< 'echo "probe ok"' 2>&1 || true)
+    else
+      PROBE_OUT=$(claude --print <<< 'Reply with exactly: probe ok' 2>&1 || true)
+    fi
+
+    if echo "$PROBE_OUT" | grep -qi "probe ok"; then
+      echo "  ▶  API available. Resuming."
+      RATE_LIMIT_TOTAL_WAITED=0  # reset for next potential limit
+      return 0
+    fi
+
+    if is_rate_limited <(echo "$PROBE_OUT"); then
+      echo "  ⏸  Still rate limited."
+    else
+      # Not rate limited but probe didn't return expected output — try anyway
+      echo "  ▶  Probe inconclusive but no rate limit detected. Resuming."
+      RATE_LIMIT_TOTAL_WAITED=0
+      return 0
+    fi
+  done
+}
+
 # ─── Helper: commit story from ralph.sh (fallback / skip mode) ───────
 # Used when the reviewer didn't commit (crash, skip, etc.)
 
@@ -236,11 +290,27 @@ run_review() {
 
   echo "  Review baseline: $BASELINE_COMMIT"
 
+  local REVIEW_OUTPUT_FILE
+  REVIEW_OUTPUT_FILE=$(mktemp /tmp/ralph-review-output.XXXXXX)
+
   codex exec \
     --full-auto \
     -C "$(pwd)" \
     < "$SCRIPT_DIR/review-prompt.md" \
-    2>&1 | tee /dev/stderr || true
+    2>&1 | tee "$REVIEW_OUTPUT_FILE" /dev/stderr || true
+
+  # Retry on rate limit
+  while is_rate_limited "$REVIEW_OUTPUT_FILE"; do
+    wait_for_rate_limit "reviewer"
+    rm -f "$REVIEW_FILE"
+    codex exec \
+      --full-auto \
+      -C "$(pwd)" \
+      < "$SCRIPT_DIR/review-prompt.md" \
+      2>&1 | tee "$REVIEW_OUTPUT_FILE" /dev/stderr || true
+  done
+
+  rm -f "$REVIEW_OUTPUT_FILE"
 
   # Check if codex produced the review file
   if [ ! -f "$REVIEW_FILE" ]; then
@@ -341,6 +411,12 @@ for i in $(seq 1 $MAX_ITERATIONS); do
     fi
 
     run_agent "$SCRIPT_DIR/CLAUDE.md" "Implement"
+
+    # Retry on rate limit
+    while is_rate_limited "$AGENT_OUTPUT_FILE"; do
+      wait_for_rate_limit "agent"
+      run_agent "$SCRIPT_DIR/CLAUDE.md" "Implement"
+    done
 
     # Check if there's anything staged
     if ! git diff --cached --quiet 2>/dev/null; then
