@@ -409,7 +409,8 @@ fi
 
 # ─── Main loop ────────────────────────────────────────────────────────
 
-echo "Starting Ralph v2 - Tool: $TOOL${MODEL:+ ($MODEL)} - Reviewer: $REVIEWER - Max iterations: $MAX_ITERATIONS - Max review rounds: $MAX_REVIEW_ROUNDS"
+echo "Starting Ralph v2.1-shooa - Tool: $TOOL${MODEL:+ ($MODEL)} - Reviewer: $REVIEWER - Max iterations: $MAX_ITERATIONS - Max review rounds: $MAX_REVIEW_ROUNDS"
+echo "  Optimizations: jq-extract, no-lock-diff, progress-trim, graceful-stop"
 echo ""
 
 for i in $(seq 1 $MAX_ITERATIONS); do
