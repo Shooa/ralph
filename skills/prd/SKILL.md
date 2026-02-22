@@ -6,7 +6,7 @@ user-invocable: true
 
 # PRD Generator
 
-Create detailed Product Requirements Documents that are clear, actionable, and suitable for implementation.
+Create detailed Product Requirements Documents that are clear, actionable, and suitable for implementation by AI agents. Every story follows strict TDD and includes specific code references.
 
 ---
 
@@ -14,8 +14,9 @@ Create detailed Product Requirements Documents that are clear, actionable, and s
 
 1. Receive a feature description from the user
 2. Ask 3-5 essential clarifying questions (with lettered options)
-3. Generate a structured PRD based on answers
-4. Save to `tasks/prd-[feature-name].md`
+3. **Scan the codebase** to find relevant files, patterns, test locations
+4. Generate a structured PRD with TDD-structured stories and code references
+5. Save to `tasks/prd-[feature-name].md`
 
 **Important:** Do NOT start implementing. Just create the PRD.
 
@@ -56,6 +57,25 @@ This lets users respond with "1A, 2C, 3B" for quick iteration. Remember to inden
 
 ---
 
+## Step 1.5: Codebase Scan
+
+**Before writing the PRD, scan the codebase to gather code references.** This is critical — PRDs without code references force the implementation agent to waste its context window exploring.
+
+For each planned story, find:
+- **Files to modify** — where the implementation code goes
+- **Files to study** — related code, interfaces, patterns to follow
+- **Test files** — where tests should be added
+
+Use `Glob` and `Grep` to:
+1. Find existing implementations of similar features
+2. Locate test directories and naming conventions
+3. Identify interfaces/ports the new code must conform to
+4. Find config files that may need updates
+
+Include these references directly in each user story.
+
+---
+
 ## Step 2: PRD Structure
 
 Generate the PRD with these sections:
@@ -66,29 +86,38 @@ Brief description of the feature and the problem it solves.
 ### 2. Goals
 Specific, measurable objectives (bullet list).
 
-### 3. User Stories
-Each story needs:
-- **Title:** Short descriptive name
-- **Description:** "As a [user], I want [feature] so that [benefit]"
-- **Acceptance Criteria:** Verifiable checklist of what "done" means
+### 3. User Stories (TDD-Structured)
 
-Each story should be small enough to implement in one focused session.
+Each story MUST follow the **Red-Green-Refactor** TDD cycle. Structure acceptance criteria in this exact order:
 
 **Format:**
 ```markdown
 ### US-001: [Title]
 **Description:** As a [user], I want [feature] so that [benefit].
 
-**Acceptance Criteria:**
-- [ ] Specific verifiable criterion
-- [ ] Another criterion
-- [ ] Typecheck/lint passes
+**Code References:**
+- Modify: `src/path/to/file.cpp` — [what to change]
+- Modify: `include/path/to/header.h` — [what to add]
+- Study: `src/path/to/similar.cpp` — [pattern to follow]
+- Study: `include/ports/IPort.h` — [interface to implement]
+- Test: `test/unit/path/test_file.cpp` — [add new test cases]
+
+**Acceptance Criteria (TDD):**
+- [ ] RED: Write failing test `TestName` in `test/path/test_file.cpp` that [verifies specific behavior]
+- [ ] GREEN: Implement [what] in `src/path/file.cpp` to make test pass
+- [ ] GREEN: [additional implementation step if needed]
+- [ ] REFACTOR: [cleanup if needed, otherwise omit]
+- [ ] All tests pass
+- [ ] Build passes
 - [ ] **[UI stories only]** Verify in browser using dev-browser skill
 ```
 
-**Important:** 
-- Acceptance criteria must be verifiable, not vague. "Works correctly" is bad. "Button shows confirmation dialog before deleting" is good.
-- **For any story with UI changes:** Always include "Verify in browser using dev-browser skill" as acceptance criteria. This ensures visual verification of frontend work.
+**Rules:**
+- RED always comes before GREEN — tests are written FIRST
+- Each RED criterion names a specific test file and test name
+- Each GREEN criterion names a specific implementation file
+- Acceptance criteria must be verifiable, not vague
+- "Works correctly" is bad. "Function returns error diagnostic for negative values" is good.
 
 ### 4. Functional Requirements
 Numbered list of specific functionalities:
@@ -100,33 +129,30 @@ Be explicit and unambiguous.
 ### 5. Non-Goals (Out of Scope)
 What this feature will NOT include. Critical for managing scope.
 
-### 6. Design Considerations (Optional)
-- UI/UX requirements
-- Link to mockups if available
-- Relevant existing components to reuse
-
-### 7. Technical Considerations (Optional)
+### 6. Technical Considerations
+- **Key files and architecture** — list the most important files the agent needs to know about
 - Known constraints or dependencies
 - Integration points with existing systems
-- Performance requirements
+- Existing patterns to follow (with file references)
 
-### 8. Success Metrics
+### 7. Success Metrics
 How will success be measured?
-- "Reduce time to complete X by 50%"
-- "Increase conversion rate by 10%"
+- "All N unit tests pass"
+- "Integration tests match reference binaries"
 
-### 9. Open Questions
+### 8. Open Questions
 Remaining questions or areas needing clarification.
 
 ---
 
-## Writing for Junior Developers
+## Writing for AI Agents
 
-The PRD reader may be a junior developer or AI agent. Therefore:
+The PRD reader is an AI agent with a limited context window. Therefore:
 
+- **Include specific file paths** — the agent should NOT have to search for files
+- **Name test files and test functions** — the agent should know exactly where to add tests
+- **Reference similar implementations** — "follow the pattern in `src/adapters/X.cpp`" saves exploration
 - Be explicit and unambiguous
-- Avoid jargon or explain it
-- Provide enough detail to understand purpose and core logic
 - Number requirements for easy reference
 - Use concrete examples where helpful
 
@@ -147,7 +173,7 @@ The PRD reader may be a junior developer or AI agent. Therefore:
 
 ## Introduction
 
-Add priority levels to tasks so users can focus on what matters most. Tasks can be marked as high, medium, or low priority, with visual indicators and filtering to help users manage their workload effectively.
+Add priority levels to tasks so users can focus on what matters most. Tasks can be marked as high, medium, or low priority, with visual indicators and filtering.
 
 ## Goals
 
@@ -161,38 +187,35 @@ Add priority levels to tasks so users can focus on what matters most. Tasks can 
 ### US-001: Add priority field to database
 **Description:** As a developer, I need to store task priority so it persists across sessions.
 
-**Acceptance Criteria:**
-- [ ] Add priority column to tasks table: 'high' | 'medium' | 'low' (default 'medium')
-- [ ] Generate and run migration successfully
-- [ ] Typecheck passes
+**Code References:**
+- Modify: `src/models/task.py` — add `status` field with enum
+- Modify: `src/migrations/` — new migration file
+- Study: `src/models/project.py` — example of enum field pattern
+- Test: `test/models/test_task.py` — add priority field tests
+
+**Acceptance Criteria (TDD):**
+- [ ] RED: Write test `test_task_has_priority_field` in `test/models/test_task.py` that checks Task has `priority` with default 'medium'
+- [ ] RED: Write test `test_task_priority_values` that checks only 'high'|'medium'|'low' are accepted
+- [ ] GREEN: Add `priority` column to tasks table in `src/models/task.py`
+- [ ] GREEN: Generate migration in `src/migrations/`
+- [ ] All tests pass
+- [ ] Build passes
 
 ### US-002: Display priority indicator on task cards
 **Description:** As a user, I want to see task priority at a glance so I know what needs attention first.
 
-**Acceptance Criteria:**
-- [ ] Each task card shows colored priority badge (red=high, yellow=medium, gray=low)
-- [ ] Priority visible without hovering or clicking
-- [ ] Typecheck passes
-- [ ] Verify in browser using dev-browser skill
+**Code References:**
+- Modify: `src/components/task_card.py` — integrate badge
+- Modify: `src/components/badge.py` — add priority color variants
+- Study: `src/components/task_card.py` — existing card layout
+- Test: `test/components/test_task_card.py` — add badge rendering tests
 
-### US-003: Add priority selector to task edit
-**Description:** As a user, I want to change a task's priority when editing it.
-
-**Acceptance Criteria:**
-- [ ] Priority dropdown in task edit modal
-- [ ] Shows current priority as selected
-- [ ] Saves immediately on selection change
-- [ ] Typecheck passes
-- [ ] Verify in browser using dev-browser skill
-
-### US-004: Filter tasks by priority
-**Description:** As a user, I want to filter the task list to see only high-priority items when I'm focused.
-
-**Acceptance Criteria:**
-- [ ] Filter dropdown with options: All | High | Medium | Low
-- [ ] Filter persists in URL params
-- [ ] Empty state message when no tasks match filter
-- [ ] Typecheck passes
+**Acceptance Criteria (TDD):**
+- [ ] RED: Write test `test_card_shows_priority_badge` in `test/components/test_task_card.py` that checks badge renders with correct color
+- [ ] GREEN: Add priority color mapping to `src/components/badge.py` (red=high, yellow=medium, gray=low)
+- [ ] GREEN: Integrate badge into `src/components/task_card.py`
+- [ ] All tests pass
+- [ ] Build passes
 - [ ] Verify in browser using dev-browser skill
 
 ## Functional Requirements
@@ -201,7 +224,6 @@ Add priority levels to tasks so users can focus on what matters most. Tasks can 
 - FR-2: Display colored priority badge on each task card
 - FR-3: Include priority selector in task edit modal
 - FR-4: Add priority filter dropdown to task list header
-- FR-5: Sort by priority within each status column (high to medium to low)
 
 ## Non-Goals
 
@@ -211,15 +233,16 @@ Add priority levels to tasks so users can focus on what matters most. Tasks can 
 
 ## Technical Considerations
 
-- Reuse existing badge component with color variants
+- **Key files:** `src/models/task.py` (model), `src/components/task_card.py` (UI), `src/api/tasks.py` (API)
+- Reuse existing badge component with color variants (`src/components/badge.py`)
+- Follow existing enum pattern from `src/models/project.py`
 - Filter state managed via URL search params
-- Priority stored in database, not computed
 
 ## Success Metrics
 
-- Users can change priority in under 2 clicks
-- High-priority tasks immediately visible at top of lists
-- No regression in task list performance
+- All 8+ new unit tests pass
+- Priority changes persist after page reload
+- No regression in existing test suite
 
 ## Open Questions
 
@@ -235,7 +258,12 @@ Before saving the PRD:
 
 - [ ] Asked clarifying questions with lettered options
 - [ ] Incorporated user's answers
-- [ ] User stories are small and specific
+- [ ] **Scanned codebase** for relevant files, tests, patterns
+- [ ] Every user story has **Code References** section with Modify/Study/Test entries
+- [ ] Every story's acceptance criteria follow **RED → GREEN → REFACTOR** order
+- [ ] RED criteria name specific test files and test names
+- [ ] GREEN criteria name specific implementation files
+- [ ] User stories are small and specific (one iteration each)
 - [ ] Functional requirements are numbered and unambiguous
 - [ ] Non-goals section defines clear boundaries
 - [ ] Saved to `tasks/prd-[feature-name].md`

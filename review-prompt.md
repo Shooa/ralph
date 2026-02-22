@@ -93,7 +93,7 @@ If you detect test weakening:
 2. **Commit** all staged changes: `git commit -m "feat: [Story ID] - [Story Title]"`
 3. Update `prd.json`: set `passes: true` for the completed story, update `notes` with brief summary
 4. Append progress to `progress.txt` (see format below)
-5. Delete `.ralph-review.json` and `.ralph-current-story`
+5. Do NOT delete `.ralph-review.json` or `.ralph-current-story` — the orchestrator manages their lifecycle
 6. Check if ALL stories in `prd.json` have `passes: true`:
    - If yes: output `<promise>COMPLETE</promise>`
    - If no: end normally

@@ -43,6 +43,12 @@ This catches incomplete implementations, bugs, architecture violations, and miss
 # With codex review (default)
 ./ralph.sh --tool claude --reviewer codex 15
 
+# With PRD enrichment (scans codebase, adds code refs to prd.json)
+./ralph.sh --tool claude --enrich --reviewer codex 15
+
+# Custom enrichment model (default: claude-haiku-4-5-20251001)
+./ralph.sh --tool claude --enrich --enrich-model claude-sonnet-4-6 15
+
 # Custom max review rounds per story
 ./ralph.sh --tool claude --reviewer codex --max-rounds 5 15
 
@@ -213,10 +219,11 @@ Default is 10 iterations. Use `--tool amp` or `--tool claude` to select your AI 
 
 | File | Purpose |
 |------|---------|
-| `ralph.sh` | The bash loop that spawns fresh AI instances (supports `--tool amp\|claude`, `--reviewer codex\|skip`) |
+| `ralph.sh` | The bash loop that spawns fresh AI instances (supports `--tool`, `--model`, `--reviewer`, `--enrich`) |
 | `prompt.md` | Prompt template for Amp (single-phase) |
 | `CLAUDE.md` | Implementation agent prompt — implement & stage, or fix review issues & re-stage |
-| `review-prompt.md` | Reviewer prompt — review, commit on PASS, or write `.ralph-review.json` on NEEDS_FIX |
+| `review-prompt.md` | Reviewer prompt — review (incl. TDD check), commit on PASS, or write `.ralph-review.json` on NEEDS_FIX |
+| `enrich-prompt.md` | Enrichment agent prompt — scans codebase, adds `filesToModify`/`filesToStudy`/`testFiles` to prd.json |
 | `prd.json` | User stories with `passes` status (the task list) |
 | `prd.json.example` | Example PRD format for reference |
 | `progress.txt` | Append-only learnings for future iterations |
@@ -274,16 +281,39 @@ Examples of what to add to AGENTS.md:
 - Gotchas ("do not forget to update Z when changing W")
 - Useful context ("the settings panel is in component X")
 
+### TDD (Test-Driven Development)
+
+All stories are structured for strict TDD:
+1. **RED** — Write failing tests first (acceptance criteria start with `RED:`)
+2. **GREEN** — Implement minimum code to pass (criteria labeled `GREEN:`)
+3. **REFACTOR** — Clean up if needed
+
+PRDs include `filesToModify`, `filesToStudy`, and `testFiles` so the agent doesn't waste context searching for files.
+
+### PRD Enrichment (`--enrich`)
+
+The `--enrich` flag runs a cheap sub-agent (Haiku by default) before the main loop to scan the codebase and populate code references in `prd.json`. This is useful when the PRD was created without codebase access.
+
 ### Feedback Loops
 
 Ralph only works if there are feedback loops:
 - Typecheck catches type errors
-- Tests verify behavior
+- Tests verify behavior (TDD ensures they exist)
 - CI must stay green (broken code compounds across iterations)
 
 ### Browser Verification for UI Stories
 
 Frontend stories must include "Verify in browser using dev-browser skill" in acceptance criteria. Ralph will use the dev-browser skill to navigate to the page, interact with the UI, and confirm changes work.
+
+### Graceful Stop
+
+To stop Ralph between stories (after a PASS commit, before the next story starts):
+
+```bash
+touch .ralph-stop
+```
+
+Ralph will finish the current story, and if it passes review and gets committed, it will exit cleanly instead of picking up the next story. The `.ralph-stop` file is automatically removed on exit.
 
 ### Stop Condition
 

@@ -513,6 +513,18 @@ for i in $(seq 1 $MAX_ITERATIONS); do
 
   echo ""
   echo "Story iteration $i complete. Continuing to next story..."
+
+  # ─── Stop claim: touch .ralph-stop to gracefully stop before next story ──
+  if [ -f ".ralph-stop" ]; then
+    rm -f ".ralph-stop"
+    echo ""
+    echo "==============================================================="
+    echo "  Ralph stopped by user (.ralph-stop file detected)"
+    echo "  Stopped after iteration $i ($REMAINING stories remaining)"
+    echo "==============================================================="
+    exit 0
+  fi
+
   sleep 2
 done
 
