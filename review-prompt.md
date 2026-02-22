@@ -25,70 +25,32 @@ Your context window is limited. Do NOT read large files in full. Extract only wh
 
 Read `.ralph-review-baseline` to get `LAST_REVIEWED_COMMIT` hash.
 
-Run **BOTH** of these diffs and review ALL changes:
-- `git diff <LAST_REVIEWED_COMMIT>..HEAD` — shows ALL committed changes since last approved review (catches sneaky commits)
-- `git diff --cached` — shows currently staged changes
+Run these commands to get the review scope:
+```bash
+# 1. Overview first (small output)
+git diff --stat <LAST_REVIEWED_COMMIT>..HEAD -- . ':!package-lock.json' ':!*.lock'
+git diff --cached --stat -- . ':!package-lock.json' ':!*.lock'
 
-**IMPORTANT**: The full diff (`LAST_REVIEWED_COMMIT..HEAD`) is the PRIMARY source of truth. If the implementation agent committed changes directly (bypassing review), you MUST catch and review those too. Any committed change that was not part of a previous PASS review is within your review scope.
+# 2. Then read only the relevant file diffs (skip lock files, they are noise)
+git diff <LAST_REVIEWED_COMMIT>..HEAD -- . ':!package-lock.json' ':!*.lock'
+git diff --cached -- . ':!package-lock.json' ':!*.lock'
+```
 
-### Step 2: Review against these criteria:
+The full diff (`LAST_REVIEWED_COMMIT..HEAD`) is the PRIMARY source. If the agent committed changes directly (bypassing review), review those too.
 
-### 1. Task Completion (MOST IMPORTANT)
+### Step 2: Review checklist
 
-- **Are ALL acceptance criteria from the user story actually met?**
-- Does the implementation actually solve the problem, or is it incomplete/stubbed?
-- Are there TODO/FIXME/HACK comments that indicate unfinished work?
-- Do tests actually pass (run `make test` or equivalent)?
-- Is the feature functionally correct, not just syntactically present?
+**Task Completion (MOST IMPORTANT):** All acceptance criteria met? No stubs/TODOs? Tests pass? Feature works, not just compiles?
 
-### 2. Clean Architecture
+**Architecture:** Dependencies inward. No circular deps. Files in correct dirs. No business logic leaking across layers.
 
-- Dependencies point inward (domain has no external imports)
-- No circular dependencies between modules
-- Interfaces in `ports/` or `domain/`, implementations in `adapters/`
-- New files placed in correct directories per project structure
-- No business logic leaking into wrong layers
+**Code Quality:** No dead code. No duplication. Consistent error handling (Result pattern). No leaks.
 
-### 3. Code Quality
+**Bugs:** Off-by-one, null checks, edge cases, operator precedence.
 
-- No dead code, unused variables, unreachable branches
-- No copy-paste duplication that should be extracted
-- Error handling is consistent with project patterns (Result pattern, diagnostics)
-- No hardcoded values that should be configurable
-- Resource cleanup (no leaks)
+**Tests:** New code has tests. Tests fail without implementation. Edge cases covered. RED criteria exist if story requires them.
 
-### 4. Bugs & Logic Errors
-
-- Off-by-one errors
-- Null/empty checks where needed
-- Edge cases handled (empty input, boundary values)
-- Correct operator precedence
-
-### 5. Test Coverage & TDD Compliance
-
-- New code has corresponding tests written BEFORE the implementation (TDD)
-- Tests actually test the behavior (not just calling code without assertions)
-- Tests would FAIL without the implementation (not trivially passing)
-- Edge cases tested
-- Test names are descriptive
-- If the story had RED acceptance criteria, check that those specific tests exist
-
-### 6. Test Integrity (CRITICAL — Anti-Cheating)
-
-**The implementation agent may modify existing tests to make them pass instead of fixing the actual code. This is the most dangerous failure mode — you MUST actively check for it.**
-
-Red flags in test changes:
-- **Weakened assertions**: `EXPECT_EQ` changed to `EXPECT_TRUE`, exact match → contains, strict check → relaxed
-- **Removed test cases**: Existing `TEST_F` or `TEST` deleted or commented out
-- **Changed expected values**: Expected output values modified to match broken implementation
-- **Removed edge cases**: Tests for boundary conditions removed
-- **Disabled tests**: `DISABLED_` prefix added, `GTEST_SKIP()` inserted
-- **Relaxed tolerances**: Numeric tolerances widened significantly
-
-If you detect test weakening:
-- Mark it as **critical** severity, category `test_integrity`
-- Verdict MUST be `NEEDS_FIX`
-- Tell the agent to restore original tests and fix the implementation instead
+**Test Integrity (CRITICAL):** Agent may weaken existing tests to pass. Red flags: weakened assertions, removed cases, changed expected values, disabled tests. If detected → **critical** `test_integrity` → `NEEDS_FIX`.
 
 ## Decision: PASS or NEEDS_FIX
 
@@ -129,37 +91,16 @@ If you detect test weakening:
 }
 ```
 
-## Progress Report Format (only on PASS)
+## Progress (only on PASS)
 
-APPEND to progress.txt (never replace, always append):
-```
-## [Date/Time] - [Story ID]
-- What was implemented
-- Files changed
-- Review: [PASS | N issues fixed across M rounds]
-- **Learnings for future iterations:**
-  - Patterns discovered
-  - Gotchas encountered
-  - Useful context
----
-```
-
-## Consolidate Patterns (only on PASS)
-
-If you discover a **reusable pattern**, add it to the `## Codebase Patterns` section at the TOP of progress.txt (create if it doesn't exist).
+APPEND to `progress.txt`: `## [Date] - [Story ID]` + 2-3 lines of what was done + key learnings.
+If you discover a **reusable pattern**, add it to `## Codebase Patterns` at the TOP of progress.txt.
 
 ## Rules
 
-- **verdict = "PASS"** only if zero critical and zero important issues AND all acceptance criteria are met
-- **verdict = "NEEDS_FIX"** if any critical or important issues exist OR any acceptance criteria are not met
-- Minor issues alone do NOT block — verdict can be "PASS" with minor issues listed
-- Be specific: include file paths and line numbers
-- Be actionable: every issue must have a concrete suggestion
-- Do NOT nitpick style if it matches existing project conventions
-- Do NOT suggest refactoring beyond what the story requires
-- If the diff is empty (nothing staged AND no committed changes since baseline), set verdict to "NEEDS_FIX" with one critical issue: "No changes"
-- Incomplete implementation (stubs, TODOs, missing acceptance criteria) is always **critical**
-- Missing tests for new behavior is always **important** (TDD requires tests)
-- Test weakening (modifying existing tests to pass instead of fixing code) is always **critical**
-- If the story had `testFiles` in prd.json, check that those files were actually modified
-- If the agent made commits directly (visible in `git diff BASELINE..HEAD` but not in `--cached`), review those commits too — they are NOT pre-approved
+- **PASS** = zero critical + zero important + all acceptance criteria met
+- **NEEDS_FIX** = any critical/important OR missing acceptance criteria
+- Minor issues alone do NOT block PASS
+- Empty diff (no staged + no committed changes) → NEEDS_FIX critical "No changes"
+- Stubs/TODOs/incomplete = **critical**. Missing tests = **important**. Test weakening = **critical**.
+- Be specific (file:line) and actionable. No style nitpicks. No scope creep.

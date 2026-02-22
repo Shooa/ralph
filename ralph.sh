@@ -139,6 +139,30 @@ if [ ! -f "$PROGRESS_FILE" ]; then
   echo "---" >> "$PROGRESS_FILE"
 fi
 
+# ─── Trim progress.txt: keep Codebase Patterns, trim old story logs ──
+# Keeps the file small so agents don't waste context reading stale logs.
+# Story logs older than the last 5 are moved to progress-archive.txt.
+if [ -f "$PROGRESS_FILE" ]; then
+  STORY_COUNT=$(grep -c '^## .*- US-' "$PROGRESS_FILE" 2>/dev/null || echo "0")
+  if [ "$STORY_COUNT" -gt 5 ]; then
+    # Extract Codebase Patterns section (top of file, before first story log)
+    FIRST_STORY_LINE=$(grep -n '^## .*- US-' "$PROGRESS_FILE" | head -1 | cut -d: -f1)
+    if [ -n "$FIRST_STORY_LINE" ] && [ "$FIRST_STORY_LINE" -gt 1 ]; then
+      head -n $((FIRST_STORY_LINE - 1)) "$PROGRESS_FILE" > "$PROGRESS_FILE.trimmed"
+    else
+      echo "# Ralph Progress Log" > "$PROGRESS_FILE.trimmed"
+      echo "---" >> "$PROGRESS_FILE.trimmed"
+    fi
+    # Keep only last 5 story logs
+    KEEP_FROM=$(grep -n '^## .*- US-' "$PROGRESS_FILE" | tail -5 | head -1 | cut -d: -f1)
+    tail -n +"$KEEP_FROM" "$PROGRESS_FILE" >> "$PROGRESS_FILE.trimmed"
+    # Archive the rest
+    cat "$PROGRESS_FILE" >> "$SCRIPT_DIR/progress-archive.txt"
+    mv "$PROGRESS_FILE.trimmed" "$PROGRESS_FILE"
+    echo "  Trimmed progress.txt (kept patterns + last 5 stories, archived full log)"
+  fi
+fi
+
 # Temp file for capturing agent output (to check for COMPLETE signal)
 AGENT_OUTPUT_FILE=$(mktemp /tmp/ralph-output.XXXXXX)
 trap "rm -f '$AGENT_OUTPUT_FILE'" EXIT
@@ -297,7 +321,7 @@ run_review() {
     --full-auto \
     -C "$(pwd)" \
     < "$SCRIPT_DIR/review-prompt.md" \
-    2>&1 | tee "$REVIEW_OUTPUT_FILE" /dev/stderr || true
+    > "$REVIEW_OUTPUT_FILE" 2>&1 || true
 
   # Retry on rate limit
   while is_rate_limited "$REVIEW_OUTPUT_FILE"; do
@@ -307,17 +331,20 @@ run_review() {
       --full-auto \
       -C "$(pwd)" \
       < "$SCRIPT_DIR/review-prompt.md" \
-      2>&1 | tee "$REVIEW_OUTPUT_FILE" /dev/stderr || true
+      > "$REVIEW_OUTPUT_FILE" 2>&1 || true
   done
-
-  rm -f "$REVIEW_OUTPUT_FILE"
 
   # Check if codex produced the review file
   if [ ! -f "$REVIEW_FILE" ]; then
     echo "  WARNING: Codex crashed or did not produce $REVIEW_FILE."
+    echo "  Last 20 lines of codex output:"
+    tail -20 "$REVIEW_OUTPUT_FILE" 2>/dev/null | sed 's/^/    /'
     REVIEW_VERDICT="CRASH"
+    rm -f "$REVIEW_OUTPUT_FILE"
     return
   fi
+
+  rm -f "$REVIEW_OUTPUT_FILE"
 
   REVIEW_VERDICT=$(jq -r '.verdict // "UNKNOWN"' "$REVIEW_FILE" 2>/dev/null || echo "UNKNOWN")
   local ISSUE_COUNT
@@ -325,6 +352,18 @@ run_review() {
 
   echo ""
   echo "  Review verdict: $REVIEW_VERDICT ($ISSUE_COUNT issues)"
+
+  # Print issue summary (conclusions only)
+  if [ "$ISSUE_COUNT" -gt 0 ]; then
+    echo ""
+    jq -r '.issues[] | "  [\(.severity)] \(.category): \(.description)"' "$REVIEW_FILE" 2>/dev/null
+  fi
+
+  if jq -e '.summary' "$REVIEW_FILE" > /dev/null 2>&1; then
+    echo ""
+    echo "  Summary: $(jq -r '.summary' "$REVIEW_FILE")"
+  fi
+
   echo ""
 }
 
