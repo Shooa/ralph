@@ -1,13 +1,15 @@
 #!/bin/bash
 # Ralph Wiggum v2 - Implement → Review loop with gatekeeper commits
-# Usage: ./ralph.sh [--tool amp|claude] [--model MODEL] [--reviewer codex|skip] [--max-rounds N] [max_iterations]
+# Usage: ./ralph.sh [--tool amp|claude] [--model MODEL] [--reviewer codex|skip] [--max-rounds N] [--enrich] [max_iterations]
 #
-# Each iteration (one user story):
-#   loop (up to max-rounds):
-#     Agent: implement or fix review issues, stage files
-#     Reviewer: review staged diff
-#       PASS  → reviewer commits, marks story done, break
-#       NEEDS_FIX → writes .ralph-review.json, agent retries
+# Phases:
+#   0. Enrich (optional, --enrich): cheap sub-agent scans codebase, adds code refs to prd.json
+#   1. Iterate stories (up to max_iterations):
+#     loop (up to max-rounds):
+#       Agent: implement or fix review issues, stage files (TDD: RED → GREEN → REFACTOR)
+#       Reviewer: review staged diff
+#         PASS  → reviewer commits, marks story done, break
+#         NEEDS_FIX → writes .ralph-review.json, agent retries
 #
 # Reviewer = gatekeeper: only the reviewer commits code.
 # If the reviewer crashes, ralph.sh commits as fallback.
@@ -18,9 +20,11 @@ set -e
 
 TOOL="amp"
 MODEL=""
+ENRICH_MODEL="claude-haiku-4-5-20251001"
 REVIEWER="codex"
 MAX_ITERATIONS=10
 MAX_REVIEW_ROUNDS=3
+DO_ENRICH=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -38,6 +42,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --model=*)
       MODEL="${1#*=}"
+      shift
+      ;;
+    --enrich)
+      DO_ENRICH=true
+      shift
+      ;;
+    --enrich-model)
+      ENRICH_MODEL="$2"
+      shift 2
+      ;;
+    --enrich-model=*)
+      ENRICH_MODEL="${1#*=}"
       shift
       ;;
     --reviewer)
@@ -83,6 +99,7 @@ LAST_BRANCH_FILE="$SCRIPT_DIR/.last-branch"
 
 REVIEW_FILE=".ralph-review.json"
 STORY_FILE=".ralph-current-story"
+LAST_REVIEWED_COMMIT_FILE=".ralph-last-reviewed-commit"
 
 # ─── Archive previous run if branch changed ───────────────────────────
 
@@ -143,6 +160,9 @@ commit_story() {
   # Commit staged changes
   git commit -m "feat: [$STORY_ID] - $STORY_TITLE" || true
 
+  # Save last reviewed commit hash
+  git rev-parse HEAD > "$LAST_REVIEWED_COMMIT_FILE"
+
   # Mark story as passed in prd.json
   jq --arg sid "$STORY_ID" \
     '(.userStories[] | select(.id == $sid)).passes = true' \
@@ -160,7 +180,7 @@ commit_story() {
   echo "  Committed [$STORY_ID] ($REASON)"
 
   # Cleanup
-  rm -f "$REVIEW_FILE" "$STORY_FILE"
+  rm -f "$REVIEW_FILE" "$STORY_FILE" ".ralph-review-baseline"
 }
 
 # ─── Helper: run the implementation agent ─────────────────────────────
@@ -192,6 +212,30 @@ run_review() {
   # Clean old review
   rm -f "$REVIEW_FILE"
 
+  # Write review baseline context for the reviewer
+  local BASELINE_COMMIT=""
+  if [ -f "$LAST_REVIEWED_COMMIT_FILE" ]; then
+    BASELINE_COMMIT=$(cat "$LAST_REVIEWED_COMMIT_FILE")
+    # Verify the commit still exists (could be rebased)
+    if ! git cat-file -e "$BASELINE_COMMIT" 2>/dev/null; then
+      BASELINE_COMMIT=""
+    fi
+  fi
+  if [ -z "$BASELINE_COMMIT" ]; then
+    # Fallback: merge-base with main
+    BASELINE_COMMIT=$(git merge-base HEAD main 2>/dev/null || git rev-parse HEAD~1 2>/dev/null || echo "")
+  fi
+
+  # Write context file for the reviewer
+  {
+    echo "LAST_REVIEWED_COMMIT=$BASELINE_COMMIT"
+    echo "# Use: git diff $BASELINE_COMMIT..HEAD  — to see ALL changes since last approved review"
+    echo "# Use: git diff --cached                — to see only currently staged changes"
+    echo "# IMPORTANT: Review the FULL diff ($BASELINE_COMMIT..HEAD), not just staged!"
+  } > ".ralph-review-baseline"
+
+  echo "  Review baseline: $BASELINE_COMMIT"
+
   codex exec \
     --full-auto \
     -C "$(pwd)" \
@@ -213,6 +257,46 @@ run_review() {
   echo "  Review verdict: $REVIEW_VERDICT ($ISSUE_COUNT issues)"
   echo ""
 }
+
+# ─── Enrichment phase (optional) ──────────────────────────────────────
+
+if [ "$DO_ENRICH" = true ] && [ -f "$SCRIPT_DIR/enrich-prompt.md" ]; then
+  # Check if prd.json already has filesToModify (skip if enriched)
+  HAS_REFS=$(jq '[.userStories[] | select(.filesToModify != null and (.filesToModify | length) > 0)] | length' "$PRD_FILE" 2>/dev/null || echo "0")
+  TOTAL=$(jq '.userStories | length' "$PRD_FILE" 2>/dev/null || echo "0")
+
+  if [ "$HAS_REFS" -lt "$TOTAL" ]; then
+    echo "==============================================================="
+    echo "  Enrichment: Scanning codebase for code references..."
+    echo "  Model: $ENRICH_MODEL"
+    echo "  Stories needing enrichment: $((TOTAL - HAS_REFS)) of $TOTAL"
+    echo "==============================================================="
+    echo ""
+
+    # Copy prd.json to working dir for the enrichment agent
+    cp "$PRD_FILE" "$(pwd)/prd.json" 2>/dev/null || true
+
+    claude --model "$ENRICH_MODEL" --dangerously-skip-permissions --print < "$SCRIPT_DIR/enrich-prompt.md" 2>&1 || true
+
+    # Copy enriched prd.json back if it was modified in working dir
+    if [ -f "$(pwd)/prd.json" ] && [ "$(pwd)/prd.json" != "$PRD_FILE" ]; then
+      # Validate JSON before overwriting
+      if jq . "$(pwd)/prd.json" > /dev/null 2>&1; then
+        cp "$(pwd)/prd.json" "$PRD_FILE"
+        echo ""
+        echo "  Enrichment complete. prd.json updated with code references."
+      else
+        echo ""
+        echo "  WARNING: Enrichment produced invalid JSON. Keeping original prd.json."
+      fi
+    fi
+
+    echo ""
+  else
+    echo "  Enrichment: All stories already have code references. Skipping."
+    echo ""
+  fi
+fi
 
 # ─── Main loop ────────────────────────────────────────────────────────
 
@@ -236,7 +320,7 @@ for i in $(seq 1 $MAX_ITERATIONS); do
   echo "==============================================================="
 
   # Clean up stale state from previous story
-  rm -f "$REVIEW_FILE" "$STORY_FILE"
+  rm -f "$REVIEW_FILE" "$STORY_FILE" ".ralph-review-baseline"
 
   # ─── Implement → Review loop ──────────────────────────────────────
 
@@ -295,12 +379,14 @@ for i in $(seq 1 $MAX_ITERATIONS); do
       if git diff --cached --quiet 2>/dev/null; then
         # Nothing staged = reviewer committed successfully
         echo "  Story PASSED review (reviewer committed)."
+        # Save last reviewed commit hash
+        git rev-parse HEAD > "$LAST_REVIEWED_COMMIT_FILE"
       else
         # Reviewer wrote PASS but didn't commit — do it ourselves
         echo "  Story PASSED review but reviewer did not commit — committing from ralph.sh."
         commit_story "PASS (committed by ralph.sh)"
       fi
-      rm -f "$REVIEW_FILE" "$STORY_FILE"
+      rm -f "$REVIEW_FILE" "$STORY_FILE" ".ralph-review-baseline"
       STORY_COMMITTED=true
       break
 
@@ -311,13 +397,13 @@ for i in $(seq 1 $MAX_ITERATIONS); do
         echo ""
         echo "  ERROR: Max review rounds ($MAX_REVIEW_ROUNDS) reached without PASS."
         echo "  Leaving changes in working tree for next iteration."
-        rm -f "$REVIEW_FILE" "$STORY_FILE"
+        rm -f "$REVIEW_FILE" "$STORY_FILE" ".ralph-review-baseline"
       fi
 
     else
       echo "  WARNING: Unknown verdict '$REVIEW_VERDICT'. Treating as NEEDS_FIX."
       if [ "$round" -eq "$MAX_REVIEW_ROUNDS" ]; then
-        rm -f "$REVIEW_FILE" "$STORY_FILE"
+        rm -f "$REVIEW_FILE" "$STORY_FILE" ".ralph-review-baseline"
       fi
     fi
 
