@@ -8,16 +8,17 @@ Your context window is limited. Do NOT read large files in full. Extract only wh
 
 ## Context
 
-1. Read `.ralph-current-story` to get the story ID (e.g. `US-005`)
-2. Read `.ralph-review-baseline` — contains the last approved commit hash
-3. Extract ONLY the current story from `prd.json` using:
+1. Read the **Run Context** section at the top of this prompt to find the PRD and progress paths
+2. Read `.ralph-current-story` to get the story ID (e.g. `US-005`)
+3. Read `.ralph-review-baseline` — contains the last approved commit hash
+4. Extract ONLY the current story from the PRD (path from Run Context) using:
    ```bash
-   STORY_ID=$(cat .ralph-current-story) && jq --arg id "$STORY_ID" '.userStories[] | select(.id == $id)' prd.json
+   STORY_ID=$(cat .ralph-current-story) && jq --arg id "$STORY_ID" '.userStories[] | select(.id == $id)' PRD_PATH
    ```
-   **NEVER read prd.json in full** — it's 60KB. You only need ~500 chars of acceptance criteria.
-4. Read `progress.txt` — previous learnings and patterns
-5. Do NOT read `tasks/prd-*.md` or `CLAUDE.md` — they are for the implementation agent, not for review
-6. For git diffs, use `git diff --stat` first, then read only relevant file diffs — not the entire diff
+   Replace `PRD_PATH` with actual path from Run Context. **NEVER read prd.json in full** — it's 60KB+. You only need ~500 chars of acceptance criteria.
+5. Read the progress log (path from Run Context) — previous learnings and patterns
+6. Do NOT read `tasks/prd-*.md` or `CLAUDE.md` — they are for the implementation agent, not for review
+7. For git diffs, use `git diff --stat` first, then read only relevant file diffs — not the entire diff
 
 ## What to Review
 
@@ -58,17 +59,17 @@ The full diff (`LAST_REVIEWED_COMMIT..HEAD`) is the PRIMARY source. If the agent
 
 1. Write `.ralph-review.json` with verdict `"PASS"` (see format below)
 2. **Commit** all staged changes: `git commit -m "feat: [Story ID] - [Story Title]"`
-3. Update `prd.json`: set `passes: true` for the completed story, update `notes` with brief summary
-4. Append progress to `progress.txt` (see format below)
+3. Update PRD (path from Run Context): set `passes: true` for the completed story, update `notes` with brief summary
+4. Append progress to the progress file (path from Run Context) (see format below)
 5. Do NOT delete `.ralph-review.json` or `.ralph-current-story` — the orchestrator manages their lifecycle
-6. Check if ALL stories in `prd.json` have `passes: true`:
+6. Check if ALL stories in the PRD have `passes: true`:
    - If yes: output `<promise>COMPLETE</promise>`
    - If no: end normally
 
 ### If NEEDS_FIX (any critical or important issues):
 
 1. Write `.ralph-review.json` with verdict `"NEEDS_FIX"` and detailed issues (see format below)
-2. Do NOT commit. Do NOT modify `prd.json`. Do NOT update `progress.txt`.
+2. Do NOT commit. Do NOT modify the PRD. Do NOT update progress.
 3. End your response — the implementation agent will read the review and fix the issues.
 
 ## Output Format (`.ralph-review.json`)
@@ -93,8 +94,8 @@ The full diff (`LAST_REVIEWED_COMMIT..HEAD`) is the PRIMARY source. If the agent
 
 ## Progress (only on PASS)
 
-APPEND to `progress.txt`: `## [Date] - [Story ID]` + 2-3 lines of what was done + key learnings.
-If you discover a **reusable pattern**, add it to `## Codebase Patterns` at the TOP of progress.txt.
+APPEND to the progress file (path from Run Context): `## [Date] - [Story ID]` + 2-3 lines of what was done + key learnings.
+If you discover a **reusable pattern**, add it to `## Codebase Patterns` at the TOP of the progress file.
 
 ## Rules
 

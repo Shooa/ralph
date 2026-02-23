@@ -7,12 +7,13 @@ You follow strict TDD (Test-Driven Development): RED → GREEN → REFACTOR.
 
 Your context window is limited. Every wasted token means less room for actual implementation.
 
-- **NEVER read `prd.json` directly** — it can be 50KB+. Use jq to extract only what you need:
+- **NEVER read `prd.json` directly** — it can be 50KB+. Use jq to extract only what you need.
+  The PRD path is in the "Run Context" section at the top of this prompt (e.g. `tasks/my-run/prd.json`).
   ```bash
-  # Get the next story to implement:
-  jq '[.userStories[] | select(.passes != true)] | sort_by(.priority) | .[0]' prd.json
+  # Get the next story to implement (replace PRD_PATH with actual path from Run Context):
+  jq '[.userStories[] | select(.passes != true)] | sort_by(.priority) | .[0]' PRD_PATH
   # Get branch name:
-  jq -r '.branchName' prd.json
+  jq -r '.branchName' PRD_PATH
   ```
 - **Use code references from the story** — `filesToStudy`, `filesToModify`, `testFiles` tell you exactly where to look. Don't waste context on `ls`/`find`/`glob` searches.
 - **Do NOT narrate your steps** — skip "Now let me..." / "Let me read..." filler text. Just call the tools.
@@ -21,16 +22,17 @@ Your context window is limited. Every wasted token means less room for actual im
 
 ## Your Task
 
-1. Extract your story from PRD using `jq` (see commands above)
-2. Read the progress log at `progress.txt` (check Codebase Patterns section first)
-3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.
-4. **Check if `.ralph-review.json` exists** — if it does, a reviewer found problems with your previous attempt. Read it carefully and fix ALL critical and important issues before proceeding.
-5. If no review file exists, pick the **highest priority** user story where `passes: false`
-6. **Read the story's code references** — `filesToModify`, `filesToStudy`, `testFiles` tell you exactly where to look. Start by reading `filesToStudy` files for context.
-7. Implement that single user story following **TDD cycle** (see below)
-8. Run quality checks (build, tests — use whatever your project requires)
-9. If checks pass, **stage all changed files with `git add`**
-10. Write the story ID to `.ralph-current-story` (just the ID on one line, e.g. `US-002`)
+1. Read the **Run Context** section at the top of this prompt to find the PRD and progress paths
+2. Extract your story from PRD using `jq` (see commands above)
+3. Read the progress log (check Codebase Patterns section first)
+4. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.
+5. **Check if `.ralph-review.json` exists** — if it does, a reviewer found problems with your previous attempt. Read it carefully and fix ALL critical and important issues before proceeding.
+6. If no review file exists, pick the **highest priority** user story where `passes: false`
+7. **Read the story's code references** — `filesToModify`, `filesToStudy`, `testFiles` tell you exactly where to look. Start by reading `filesToStudy` files for context.
+8. Implement that single user story following **TDD cycle** (see below)
+9. Run quality checks (build, tests — use whatever your project requires)
+10. If checks pass, **stage all changed files with `git add`**
+11. Write the story ID to `.ralph-current-story` (just the ID on one line, e.g. `US-002`)
 
 ## TDD Workflow (MANDATORY)
 

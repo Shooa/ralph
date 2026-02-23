@@ -8,6 +8,33 @@ Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/).
 
 [Read my in-depth article on how I use Ralph](https://x.com/ryancarson/status/2008548371712135632)
 
+## Installation
+
+```bash
+curl -sL https://raw.githubusercontent.com/Shooa/ralph/main/install.sh | bash
+```
+
+This installs to `~/.ralph/` and creates a symlink at `~/.local/bin/ralph`. Skills are symlinked to `~/.claude/skills/`.
+
+Make sure `~/.local/bin` is in your PATH:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"  # add to .zshrc / .bashrc
+```
+
+### Auto-update
+
+Ralph checks for updates on every run. If a new version is available on GitHub, it downloads and re-executes automatically. Skip with `--no-update`.
+
+### Prerequisites
+
+- One of the following AI coding tools installed and authenticated:
+  - [Amp CLI](https://ampcode.com) (default)
+  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`)
+- `jq` installed (`brew install jq` on macOS)
+- A git repository for your project
+- (Optional) [OpenAI Codex CLI](https://github.com/openai/codex) for the review phase (`--reviewer codex`)
+
 ## Review Mode (v2)
 
 This fork adds an optional **implement → review loop** with a separate code reviewer as gatekeeper:
@@ -35,28 +62,79 @@ This fork adds an optional **implement → review loop** with a separate code re
 
 The loop repeats up to `--max-rounds` times (default: 3) per story. Only the reviewer commits — the implementation agent never touches git history.
 
-This catches incomplete implementations, bugs, architecture violations, and missing test coverage **before** they enter git history.
+## Branch-Based Sessions
 
-### Usage
+Ralph supports multiple concurrent runs in a project via branch-based session detection:
+
+```
+tasks/
+├── ralph-phase1/          # auto-detected on branch ralph/phase1
+│   ├── prd.json
+│   ├── progress.txt
+│   └── archive/
+└── ralph-phase2/          # auto-detected on branch ralph/phase2
+    ├── prd.json
+    └── progress.txt
+```
+
+**Resolution order:**
+1. `--run NAME` → `tasks/NAME/` (explicit)
+2. Git branch `ralph/X` → `tasks/ralph-X/` (auto, `tr '/' '-'`)
+3. Single `tasks/*/prd.json` → uses that directory (fallback)
+4. Multiple or none → error with suggestions
+
+### Managing runs
+
+```bash
+# List all runs with progress
+ralph --list
+
+# Create a new empty run
+ralph --new my-feature
+
+# Explicitly select a run
+ralph --run my-feature --tool claude 10
+```
+
+## Usage
 
 ```bash
 # With codex review (default)
-./ralph.sh --tool claude --reviewer codex 15
+ralph --tool claude --reviewer codex 15
 
 # With PRD enrichment (scans codebase, adds code refs to prd.json)
-./ralph.sh --tool claude --enrich --reviewer codex 15
+ralph --tool claude --enrich --reviewer codex 15
 
 # Custom enrichment model (default: claude-haiku-4-5-20251001)
-./ralph.sh --tool claude --enrich --enrich-model claude-sonnet-4-6 15
+ralph --tool claude --enrich --enrich-model claude-sonnet-4-6 15
 
 # Custom max review rounds per story
-./ralph.sh --tool claude --reviewer codex --max-rounds 5 15
+ralph --tool claude --reviewer codex --max-rounds 5 15
 
 # Skip review (original single-phase behavior)
-./ralph.sh --tool claude --reviewer skip 15
+ralph --tool claude --reviewer skip 15
 
 # Amp + codex review
-./ralph.sh --tool amp --reviewer codex 10
+ralph --tool amp --reviewer codex 10
+```
+
+### All options
+
+```
+ralph [options] [max_iterations]
+
+  --tool amp|claude          LLM agent (default: amp)
+  --model MODEL              Model override
+  --reviewer codex|claude|skip  Code reviewer (default: codex)
+  --max-rounds N             Max review rounds per story (default: 3)
+  --enrich                   Run enrichment phase
+  --enrich-model MODEL       Model for enrichment
+  --run NAME                 Use tasks/NAME/ explicitly
+  --list                     List all runs with status
+  --new NAME                 Create new empty run
+  --no-update                Skip auto-update
+  --version                  Show version
+  --help                     Show help
 ```
 
 ### Review output format (`.ralph-review.json`)
@@ -78,88 +156,6 @@ This catches incomplete implementations, bugs, architecture violations, and miss
   ]
 }
 ```
-
-### Prerequisites for review phase
-
-- [OpenAI Codex CLI](https://github.com/openai/codex) installed and authenticated (for `--reviewer codex`)
-
-## Prerequisites
-
-- One of the following AI coding tools installed and authenticated:
-  - [Amp CLI](https://ampcode.com) (default)
-  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`)
-- `jq` installed (`brew install jq` on macOS)
-- A git repository for your project
-- (Optional) [OpenAI Codex CLI](https://github.com/openai/codex) for the review phase (`--reviewer codex`)
-
-## Setup
-
-### Option 1: Copy to your project
-
-Copy the ralph files into your project:
-
-```bash
-# From your project root
-mkdir -p scripts/ralph
-cp /path/to/ralph/ralph.sh scripts/ralph/
-
-# Copy the prompt template for your AI tool of choice:
-cp /path/to/ralph/prompt.md scripts/ralph/prompt.md    # For Amp
-# OR
-cp /path/to/ralph/CLAUDE.md scripts/ralph/CLAUDE.md    # For Claude Code
-
-chmod +x scripts/ralph/ralph.sh
-```
-
-### Option 2: Install skills globally (Amp)
-
-Copy the skills to your Amp or Claude config for use across all projects:
-
-For AMP
-```bash
-cp -r skills/prd ~/.config/amp/skills/
-cp -r skills/ralph ~/.config/amp/skills/
-```
-
-For Claude Code (manual)
-```bash
-cp -r skills/prd ~/.claude/skills/
-cp -r skills/ralph ~/.claude/skills/
-```
-
-### Option 3: Use as Claude Code Marketplace
-
-Add the Ralph marketplace to Claude Code:
-
-```bash
-/plugin marketplace add snarktank/ralph
-```
-
-Then install the skills:
-
-```bash
-/plugin install ralph-skills@ralph-marketplace
-```
-
-Available skills after installation:
-- `/prd` - Generate Product Requirements Documents
-- `/ralph` - Convert PRDs to prd.json format
-
-Skills are automatically invoked when you ask Claude to:
-- "create a prd", "write prd for", "plan this feature"
-- "convert this prd", "turn into ralph format", "create prd.json"
-
-### Configure Amp auto-handoff (recommended)
-
-Add to `~/.config/amp/settings.json`:
-
-```json
-{
-  "amp.experimental.autoHandoff": { "context": 90 }
-}
-```
-
-This enables automatic handoff when context fills up, allowing Ralph to handle large stories that exceed a single context window.
 
 ## Workflow
 
@@ -186,49 +182,35 @@ This creates `prd.json` with user stories structured for autonomous execution.
 ### 3. Run Ralph
 
 ```bash
-# Using Amp (default, single-phase)
-./scripts/ralph/ralph.sh [max_iterations]
+# Create a run (if you haven't already)
+ralph --new my-feature
 
-# Using Claude Code (single-phase)
-./scripts/ralph/ralph.sh --tool claude [max_iterations]
+# Copy/move prd.json to the run directory
+cp tasks/prd.json tasks/my-feature/prd.json
 
-# Three-phase with code review
-./scripts/ralph/ralph.sh --tool claude --reviewer codex [max_iterations]
+# Run!
+ralph --run my-feature --tool claude --reviewer codex 15
 ```
 
-Default is 10 iterations. Use `--tool amp` or `--tool claude` to select your AI coding tool. Use `--reviewer codex` to enable the three-phase review loop (or `--reviewer skip` to disable).
+Or with branch-based detection:
 
-**Single-phase** (default / `--reviewer skip`): Ralph will:
-1. Create a feature branch (from PRD `branchName`)
-2. Pick the highest priority story where `passes: false`
-3. Implement that single story
-4. Run quality checks (typecheck, tests)
-5. Commit if checks pass
-6. Update `prd.json` to mark story as `passes: true`
-7. Append learnings to `progress.txt`
-8. Repeat until all stories pass or max iterations reached
-
-**With reviewer** (`--reviewer codex`): each story iteration loops:
-1. **Implement** — agent codes the story (or fixes review issues), stages files (no commit)
-2. **Review** — codex reviews staged diff and checks acceptance criteria
-   - **PASS** → reviewer commits, marks story done
-   - **NEEDS_FIX** → writes `.ralph-review.json`, agent retries from step 1
-3. Loop repeats up to `--max-rounds` times (default: 3) per story
+```bash
+git checkout -b ralph/my-feature
+# prd.json is at tasks/ralph-my-feature/prd.json
+ralph --tool claude --reviewer codex 15
+```
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `ralph.sh` | The bash loop that spawns fresh AI instances (supports `--tool`, `--model`, `--reviewer`, `--enrich`) |
+| `ralph.sh` | The bash loop (supports `--tool`, `--model`, `--reviewer`, `--enrich`, `--run`, `--list`) |
 | `prompt.md` | Prompt template for Amp (single-phase) |
 | `CLAUDE.md` | Implementation agent prompt — implement & stage, or fix review issues & re-stage |
-| `review-prompt.md` | Reviewer prompt — review (incl. TDD check), commit on PASS, or write `.ralph-review.json` on NEEDS_FIX |
-| `enrich-prompt.md` | Enrichment agent prompt — scans codebase, adds `filesToModify`/`filesToStudy`/`testFiles` to prd.json |
-| `prd.json` | User stories with `passes` status (the task list) |
+| `review-prompt.md` | Reviewer prompt — review, commit on PASS, or write `.ralph-review.json` on NEEDS_FIX |
+| `enrich-prompt.md` | Enrichment agent prompt — scans codebase, adds code references to prd.json |
+| `install.sh` | Installer script (`curl \| bash`) |
 | `prd.json.example` | Example PRD format for reference |
-| `progress.txt` | Append-only learnings for future iterations |
-| `.ralph-review.json` | Review feedback (created by reviewer on NEEDS_FIX, read by agent, deleted after commit) |
-| `.ralph-current-story` | Current story ID (created by agent, deleted by reviewer after commit) |
 | `skills/prd/` | Skill for generating PRDs (works with Amp and Claude Code) |
 | `skills/ralph/` | Skill for converting PRDs to JSON (works with Amp and Claude Code) |
 | `.claude-plugin/` | Plugin manifest for Claude Code marketplace discovery |
@@ -239,14 +221,6 @@ Default is 10 iterations. Use `--tool amp` or `--tool claude` to select your AI 
 [![Ralph Flowchart](ralph-flowchart.png)](https://snarktank.github.io/ralph/)
 
 **[View Interactive Flowchart](https://snarktank.github.io/ralph/)** - Click through to see each step with animations.
-
-The `flowchart/` directory contains the source code. To run locally:
-
-```bash
-cd flowchart
-npm install
-npm run dev
-```
 
 ## Critical Concepts
 
@@ -261,26 +235,6 @@ Each iteration spawns a **new AI instance** (Amp or Claude Code) with clean cont
 
 Each PRD item should be small enough to complete in one context window. If a task is too big, the LLM runs out of context before finishing and produces poor code.
 
-Right-sized stories:
-- Add a database column and migration
-- Add a UI component to an existing page
-- Update a server action with new logic
-- Add a filter dropdown to a list
-
-Too big (split these):
-- "Build the entire dashboard"
-- "Add authentication"
-- "Refactor the API"
-
-### AGENTS.md Updates Are Critical
-
-After each iteration, Ralph updates the relevant `AGENTS.md` files with learnings. This is key because AI coding tools automatically read these files, so future iterations (and future human developers) benefit from discovered patterns, gotchas, and conventions.
-
-Examples of what to add to AGENTS.md:
-- Patterns discovered ("this codebase uses X for Y")
-- Gotchas ("do not forget to update Z when changing W")
-- Useful context ("the settings panel is in component X")
-
 ### TDD (Test-Driven Development)
 
 All stories are structured for strict TDD:
@@ -288,32 +242,17 @@ All stories are structured for strict TDD:
 2. **GREEN** — Implement minimum code to pass (criteria labeled `GREEN:`)
 3. **REFACTOR** — Clean up if needed
 
-PRDs include `filesToModify`, `filesToStudy`, and `testFiles` so the agent doesn't waste context searching for files.
-
 ### PRD Enrichment (`--enrich`)
 
-The `--enrich` flag runs a cheap sub-agent (Haiku by default) before the main loop to scan the codebase and populate code references in `prd.json`. This is useful when the PRD was created without codebase access.
-
-### Feedback Loops
-
-Ralph only works if there are feedback loops:
-- Typecheck catches type errors
-- Tests verify behavior (TDD ensures they exist)
-- CI must stay green (broken code compounds across iterations)
-
-### Browser Verification for UI Stories
-
-Frontend stories must include "Verify in browser using dev-browser skill" in acceptance criteria. Ralph will use the dev-browser skill to navigate to the page, interact with the UI, and confirm changes work.
+The `--enrich` flag runs a cheap sub-agent (Haiku by default) before the main loop to scan the codebase and populate code references in `prd.json`.
 
 ### Graceful Stop
-
-To stop Ralph between stories (after a PASS commit, before the next story starts):
 
 ```bash
 touch .ralph-stop
 ```
 
-Ralph will finish the current story, and if it passes review and gets committed, it will exit cleanly instead of picking up the next story. The `.ralph-stop` file is automatically removed on exit.
+Ralph will finish the current story and exit cleanly.
 
 ### Stop Condition
 
@@ -321,29 +260,19 @@ When all stories have `passes: true`, Ralph outputs `<promise>COMPLETE</promise>
 
 ## Debugging
 
-Check current state:
-
 ```bash
 # See which stories are done
-cat prd.json | jq '.userStories[] | {id, title, passes}'
+jq '.userStories[] | {id, title, passes}' tasks/my-run/prd.json
 
 # See learnings from previous iterations
-cat progress.txt
+cat tasks/my-run/progress.txt
+
+# List all runs
+ralph --list
 
 # Check git history
 git log --oneline -10
 ```
-
-## Customizing the Prompt
-
-After copying `prompt.md` (for Amp) or `CLAUDE.md` (for Claude Code) to your project, customize it for your project:
-- Add project-specific quality check commands
-- Include codebase conventions
-- Add common gotchas for your stack
-
-## Archiving
-
-Ralph automatically archives previous runs when you start a new feature (different `branchName`). Archives are saved to `archive/YYYY-MM-DD-feature-name/`.
 
 ## References
 
