@@ -1,6 +1,6 @@
 #!/bin/bash
 # Ralph Wiggum v2 - Implement → Review loop with gatekeeper commits
-# Usage: ./ralph.sh [--tool amp|claude] [--model MODEL] [--reviewer codex|skip] [--max-rounds N] [--enrich] [max_iterations]
+# Usage: ./ralph.sh [--tool amp|claude] [--model MODEL] [--reviewer codex|claude|skip] [--max-rounds N] [--enrich] [max_iterations]
 #
 # Phases:
 #   0. Enrich (optional, --enrich): cheap sub-agent scans codebase, adds code refs to prd.json
@@ -86,8 +86,8 @@ if [[ "$TOOL" != "amp" && "$TOOL" != "claude" ]]; then
   echo "Error: Invalid tool '$TOOL'. Must be 'amp' or 'claude'."
   exit 1
 fi
-if [[ "$REVIEWER" != "codex" && "$REVIEWER" != "skip" ]]; then
-  echo "Error: Invalid reviewer '$REVIEWER'. Must be 'codex' or 'skip'."
+if [[ "$REVIEWER" != "codex" && "$REVIEWER" != "claude" && "$REVIEWER" != "skip" ]]; then
+  echo "Error: Invalid reviewer '$REVIEWER'. Must be 'codex', 'claude', or 'skip'."
   exit 1
 fi
 
@@ -169,56 +169,30 @@ trap "rm -f '$AGENT_OUTPUT_FILE'" EXIT
 
 # ─── Rate limit detection and retry ──────────────────────────────────
 
-RATE_LIMIT_WAIT=900        # 15 minutes between retries
-RATE_LIMIT_MAX_WAIT=28800  # 8 hours total wait before giving up
-RATE_LIMIT_TOTAL_WAITED=0
+RATE_LIMIT_DELAYS=(300 900 1800)  # 5min, 15min, 30min — then repeats 30min
 
 is_rate_limited() {
   local OUTPUT_FILE="$1"
-  grep -qiE 'rate.limit|rate_limit_exceeded|429|overloaded|usage.limit|too many requests' "$OUTPUT_FILE" 2>/dev/null
+  # Only match actual API error messages, not random occurrences in code/analysis
+  grep -qiE 'rate limit exceeded|rate_limit_exceeded|error.*429|status.*429|too many requests|usage limit exceeded' "$OUTPUT_FILE" 2>/dev/null
+}
+
+get_rate_limit_delay() {
+  local RETRY="$1"
+  local MAX_IDX=$(( ${#RATE_LIMIT_DELAYS[@]} - 1 ))
+  local IDX=$(( RETRY < MAX_IDX ? RETRY : MAX_IDX ))
+  echo "${RATE_LIMIT_DELAYS[$IDX]}"
 }
 
 wait_for_rate_limit() {
-  local WHO="$1"  # "agent" or "reviewer"
+  local WHO="$1"   # "agent" or "reviewer"
+  local RETRY="$2" # retry number (0-based)
+  local DELAY
+  DELAY=$(get_rate_limit_delay "$RETRY")
+  local DELAY_MIN=$(( DELAY / 60 ))
   echo ""
-  echo "  ⏸  Rate limit detected ($WHO). Pausing..."
-
-  while true; do
-    if [ "$RATE_LIMIT_TOTAL_WAITED" -ge "$RATE_LIMIT_MAX_WAIT" ]; then
-      echo "  ✗  Rate limit wait exceeded ${RATE_LIMIT_MAX_WAIT}s total. Giving up."
-      echo "  ✗  Resume manually when limits reset."
-      exit 2
-    fi
-
-    local REMAINING_MINS=$(( (RATE_LIMIT_MAX_WAIT - RATE_LIMIT_TOTAL_WAITED) / 60 ))
-    echo "  ⏸  Waiting ${RATE_LIMIT_WAIT}s... (total waited: ${RATE_LIMIT_TOTAL_WAITED}s, give up in ~${REMAINING_MINS}m)"
-    sleep "$RATE_LIMIT_WAIT"
-    RATE_LIMIT_TOTAL_WAITED=$(( RATE_LIMIT_TOTAL_WAITED + RATE_LIMIT_WAIT ))
-
-    # Probe: lightweight check if limits have reset
-    echo "  ⏸  Probing API availability..."
-    local PROBE_OUT
-    if [[ "$WHO" == "reviewer" ]]; then
-      PROBE_OUT=$(codex exec --full-auto -C "$(pwd)" <<< 'echo "probe ok"' 2>&1 || true)
-    else
-      PROBE_OUT=$(claude --print <<< 'Reply with exactly: probe ok' 2>&1 || true)
-    fi
-
-    if echo "$PROBE_OUT" | grep -qi "probe ok"; then
-      echo "  ▶  API available. Resuming."
-      RATE_LIMIT_TOTAL_WAITED=0  # reset for next potential limit
-      return 0
-    fi
-
-    if is_rate_limited <(echo "$PROBE_OUT"); then
-      echo "  ⏸  Still rate limited."
-    else
-      # Not rate limited but probe didn't return expected output — try anyway
-      echo "  ▶  Probe inconclusive but no rate limit detected. Resuming."
-      RATE_LIMIT_TOTAL_WAITED=0
-      return 0
-    fi
-  done
+  echo "  ⏸  Rate limit detected ($WHO). Retry $((RETRY + 1)), waiting ${DELAY_MIN}m..."
+  sleep "$DELAY"
 }
 
 # ─── Helper: commit story from ralph.sh (fallback / skip mode) ───────
@@ -285,7 +259,7 @@ run_agent() {
 REVIEW_VERDICT="UNKNOWN"
 
 run_review() {
-  echo "  [Review] Running codex..."
+  echo "  [Review] Running $REVIEWER..."
 
   # Clean old review
   rm -f "$REVIEW_FILE"
@@ -317,21 +291,27 @@ run_review() {
   local REVIEW_OUTPUT_FILE
   REVIEW_OUTPUT_FILE=$(mktemp /tmp/ralph-review-output.XXXXXX)
 
-  codex exec \
-    --full-auto \
-    -C "$(pwd)" \
-    < "$SCRIPT_DIR/review-prompt.md" \
-    > "$REVIEW_OUTPUT_FILE" 2>&1 || true
+  local RETRY=0
+  while true; do
+    if [[ "$REVIEWER" == "codex" ]]; then
+      codex exec \
+        --full-auto \
+        -C "$(pwd)" \
+        < "$SCRIPT_DIR/review-prompt.md" \
+        > "$REVIEW_OUTPUT_FILE" 2>&1 || true
+    else
+      claude --dangerously-skip-permissions --print \
+        < "$SCRIPT_DIR/review-prompt.md" \
+        > "$REVIEW_OUTPUT_FILE" 2>&1 || true
+    fi
 
-  # Retry on rate limit
-  while is_rate_limited "$REVIEW_OUTPUT_FILE"; do
-    wait_for_rate_limit "reviewer"
+    if ! is_rate_limited "$REVIEW_OUTPUT_FILE"; then
+      break
+    fi
+
+    wait_for_rate_limit "reviewer" "$RETRY"
+    RETRY=$((RETRY + 1))
     rm -f "$REVIEW_FILE"
-    codex exec \
-      --full-auto \
-      -C "$(pwd)" \
-      < "$SCRIPT_DIR/review-prompt.md" \
-      > "$REVIEW_OUTPUT_FILE" 2>&1 || true
   done
 
   # Check if codex produced the review file
@@ -452,9 +432,11 @@ for i in $(seq 1 $MAX_ITERATIONS); do
 
     run_agent "$SCRIPT_DIR/CLAUDE.md" "Implement"
 
-    # Retry on rate limit
+    # Retry on rate limit (progressive delays: 5m, 15m, 30m, 30m...)
+    AGENT_RETRY=0
     while is_rate_limited "$AGENT_OUTPUT_FILE"; do
-      wait_for_rate_limit "agent"
+      wait_for_rate_limit "agent" "$AGENT_RETRY"
+      AGENT_RETRY=$((AGENT_RETRY + 1))
       run_agent "$SCRIPT_DIR/CLAUDE.md" "Implement"
     done
 

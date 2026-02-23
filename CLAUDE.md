@@ -3,9 +3,25 @@
 You are an autonomous coding agent working on a software project.
 You follow strict TDD (Test-Driven Development): RED → GREEN → REFACTOR.
 
+## Context Efficiency Rules
+
+Your context window is limited. Every wasted token means less room for actual implementation.
+
+- **NEVER read `prd.json` directly** — it can be 50KB+. Use jq to extract only what you need:
+  ```bash
+  # Get the next story to implement:
+  jq '[.userStories[] | select(.passes != true)] | sort_by(.priority) | .[0]' prd.json
+  # Get branch name:
+  jq -r '.branchName' prd.json
+  ```
+- **Use code references from the story** — `filesToStudy`, `filesToModify`, `testFiles` tell you exactly where to look. Don't waste context on `ls`/`find`/`glob` searches.
+- **Do NOT narrate your steps** — skip "Now let me..." / "Let me read..." filler text. Just call the tools.
+- **Avoid duplicating project CLAUDE.md** — if your project root has a `CLAUDE.md` with architecture rules, the agent already reads it. Don't copy those rules into this file — it wastes ~2K+ tokens on duplication. Instead, add a note here: "Read `CLAUDE.md` in the project root for architecture rules."
+- Write `.ralph-current-story` with a single Bash `echo` command, not the Write tool.
+
 ## Your Task
 
-1. Read the PRD at `prd.json` (in the same directory as this file)
+1. Extract your story from PRD using `jq` (see commands above)
 2. Read the progress log at `progress.txt` (check Codebase Patterns section first)
 3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.
 4. **Check if `.ralph-review.json` exists** — if it does, a reviewer found problems with your previous attempt. Read it carefully and fix ALL critical and important issues before proceeding.
